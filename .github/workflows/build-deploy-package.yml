@@ -48,6 +48,7 @@ jobs:
         working-directory: frontend
         run: |
           printf 'onlyBuiltDependencies:\n  - esbuild\n  - esbuild@0.27.7\n' > pnpm-workspace.yaml
+          pnpm approve-builds --all
           pnpm install --frozen-lockfile
 
       - name: Lint frontend
