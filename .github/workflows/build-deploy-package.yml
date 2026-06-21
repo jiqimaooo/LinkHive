@@ -110,11 +110,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: 自动构建 ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           body: |
             ## 更新内容
 
-            - 自动构建时间：${{ steps.version.outputs.build_time }}（Asia/Shanghai）
+            - 构建时间：${{ steps.version.outputs.build_time }}（Asia/Shanghai）
             - 提交版本：`${{ github.sha }}`
             - 包含最新前端构建、Web 管理服务、短信转发服务
             - 包含 Debian 一键安装脚本与环境检查
