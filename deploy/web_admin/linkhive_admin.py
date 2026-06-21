@@ -340,7 +340,7 @@ def app_version() -> str:
     flag = Path("/tmp/linkhive_update_ready")
     if flag.exists():
         return flag.read_text().strip()
-    return "V1.0 (20250621)"
+    return "V1.0-20250621"
 
 
 def auth_username() -> str:
@@ -2406,13 +2406,11 @@ def perform_update(ctx: ActionContext, _payload: dict[str, Any]) -> None:
 
         ctx.log("更新完成，2 秒后自动重启服务...")
         ctx.sleep(1, "")
-        # 格式化版本号 Vx.x (YYYYMMDD)，写入重启标记
+        # 格式化版本号为统一展示格式 Vx.x-YYYYMMDD
         import re
-        # 新格式: V2.6 (20250621) 直接用
-        # 旧格式: v2026.06.21-2.6 需要解析
         m = re.match(r"v(\d{4})\.(\d{2})\.(\d{2})-(\d+\.\d+)", tag)
         if m:
-            display = f"V{m.group(4)} ({m.group(1)}{m.group(2)}{m.group(3)})"
+            display = f"V{m.group(4)}-{m.group(1)}{m.group(2)}{m.group(3)}"
         else:
             display = tag
         Path("/tmp/linkhive_update_ready").write_text(display)

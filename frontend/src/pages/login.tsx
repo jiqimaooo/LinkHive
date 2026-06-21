@@ -9,10 +9,25 @@ import { Toaster } from "sonner"
 
 import { Logo } from "@/components/shared/logo"
 
+const REMEMBER_KEY = "linkhive_remember"
+
 export default function LoginPage() {
   const { loginForm, setLoginForm, isLoggingIn, totpRequired, banRemaining, login } = useAppContext()
   const [totpCode, setTotpCode] = useState("")
+  const [rememberMe, setRememberMe] = useState(false)
   const [countdown, setCountdown] = useState(banRemaining)
+
+  // 初始化：读取已保存的凭证
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(REMEMBER_KEY)
+      if (saved) {
+        const { username, password } = JSON.parse(saved)
+        setLoginForm((c) => ({ ...c, username: username || c.username, password: password || c.password }))
+        setRememberMe(true)
+      }
+    } catch { /* ignore */ }
+  }, [])
 
   useEffect(() => {
     setCountdown(banRemaining)
@@ -34,6 +49,13 @@ export default function LoginPage() {
   const seconds = countdown % 60
 
   const handleSubmit = () => {
+    // 记住密码：在登录前保存（密码步骤），TOTP 步骤不重复保存
+    if (!totpRequired && rememberMe) {
+      localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username: loginForm.username, password: loginForm.password }))
+    } else if (!rememberMe) {
+      localStorage.removeItem(REMEMBER_KEY)
+    }
+
     if (totpRequired) {
       void login(totpCode)
     } else {
@@ -93,6 +115,16 @@ export default function LoginPage() {
                   <div className="grid gap-2">
                     <Label htmlFor="login-password">密码</Label>
                     <Input id="login-password" type="password" value={loginForm.password} onChange={(e) => setLoginForm((c) => ({ ...c, password: e.target.value }))} autoComplete="current-password" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="remember-me"
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="size-4 rounded accent-blue-600"
+                    />
+                    <Label htmlFor="remember-me" className="text-sm text-muted-foreground cursor-pointer">记住密码</Label>
                   </div>
                   <Button type="submit" disabled={isLoggingIn} className="h-11">
                     {isLoggingIn ? <LoaderCircleIcon data-icon="inline-start" className="animate-spin" /> : null}

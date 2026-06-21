@@ -6,7 +6,7 @@ set -e
 
 VERSION="${1:?请指定版本号，例如: V2.8}"
 DATE=$(date +%Y%m%d)
-TAG="V${VERSION#V} (${DATE})"
+TAG="V${VERSION#V}-${DATE}"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
