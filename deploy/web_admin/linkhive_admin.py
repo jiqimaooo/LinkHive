@@ -2395,16 +2395,14 @@ def perform_update(ctx: ActionContext, _payload: dict[str, Any]) -> None:
                     shutil.copytree(src, static_dir)
                     ctx.log(f"静态文件已更新到 {static_dir}")
                     break
-            # 也检查是否有更新的 Python 文件
+            # 更新 linkhive_admin.py 主程序
             for f in _files:
-                if f.endswith(".py"):
+                if f == "linkhive_admin.py":
                     src_file = Path(root) / f
-                    rel = src_file.relative_to(tmp_dir)
-                    dest = SCRIPT_DIR / f
-                    if "deploy" in str(src_file) or "web_admin" in str(src_file):
-                        continue
+                    dest = Path(sys.argv[0]).resolve()
                     shutil.copy2(src_file, dest)
-                    ctx.log(f"已更新：{f}")
+                    ctx.log(f"已更新主程序：{dest}")
+                    break
 
         ctx.log("更新完成，2 秒后自动重启服务...")
         ctx.sleep(1, "")
