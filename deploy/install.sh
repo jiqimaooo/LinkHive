@@ -455,8 +455,13 @@ install_system_packages() {
     if ! command -v python3 >/dev/null 2>&1; then
         missing_packages="${missing_packages} python3"
     fi
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-        missing_packages="${missing_packages} python3-venv"
+    if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
+        python_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+        if [ -n "${python_version}" ]; then
+            missing_packages="${missing_packages} python${python_version}-venv"
+        else
+            missing_packages="${missing_packages} python3-venv"
+        fi
     fi
     if ! command -v mmcli >/dev/null 2>&1; then
         missing_packages="${missing_packages} modemmanager"
