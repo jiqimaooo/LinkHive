@@ -347,6 +347,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeAction, appendLog, notificationTargets, refreshStatus, submittingActionLabel, syncFormsFromStatus])
 
+  const esimEnabled = status?.capabilities.esim_management_enabled ?? true
+
   const saveKeepalive = useCallback(async () => {
     if (activeAction || submittingActionLabel) {
       toast.info("当前已有任务在执行，请稍等")
@@ -401,7 +403,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       appendLog({ time: new Date().toLocaleTimeString("zh-CN", { hour12: false }), level: "error", message })
       toast.error(message)
     }
-  }, [activeAction, appendLog, keepaliveSettings, keepaliveTasks, refreshStatus, submittingActionLabel, syncFormsFromStatus])
+  }, [activeAction, appendLog, esimEnabled, keepaliveSettings, keepaliveTasks, refreshStatus, submittingActionLabel, syncFormsFromStatus])
 
   const sendKeepaliveTestSms = useCallback(async (task: KeepaliveFormTask) => {
     const number = task.target_number.trim()
@@ -495,7 +497,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!(status?.profiles ?? []).some((profile) => profile.iccid === expandedProfileIccid)) setExpandedProfileIccid(null)
   }, [expandedProfileIccid, status?.profiles])
 
-  const esimEnabled = status?.capabilities.esim_management_enabled ?? true
   const currentSimType: "physical" | "esim" = status?.capabilities.sim_type === "physical" ? "physical" : "esim"
   const actionBusy = Boolean(activeAction || submittingActionLabel)
 
