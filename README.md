@@ -1,67 +1,116 @@
 # LinkHive
 
-LinkHive 是一个面向 4G 模组的短信转发与 SIM 管理控制台。项目参考 `cyDione/eSIM-SMS-Forwarder` 的核心能力，但部署方式调整为同一套系统同时支持普通 SIM 与 eSIM，通过控制台左侧菜单二选一启用。
+LinkHive 是一个运行在 Debian/Ubuntu 设备上的 4G 模组管理与短信转发控制台，面向工控机、软路由、4G 网关和带蜂窝模组的边缘设备。
 
-## 功能
+它支持普通 SIM 与 eSIM 两种模式，并通过同一套 Web 控制台进行互斥切换：左侧菜单始终显示 `普通 SIM` 与 `eSIM`，但系统运行时只会启用其中一种。
 
-- 普通 SIM：保留基带状态、APN、网络制式、短信列表、短信转发与测试短信能力。
-- eSIM：在普通 SIM 能力基础上启用 Profile 列表、切卡、短信中心关联和保活任务。
-- 模式互斥：`普通 SIM` 与 `eSIM` 不能同时启用，前端两个菜单始终可见，点击任意一个会写入系统配置并自动关闭另一个模式。
-- 鉴权：Web API 默认启用登录鉴权，首次安装自动生成 `admin` 初始密码。
-- 通知渠道：通过 Apprise 支持 Bark、Telegram、Gotify、ntfy、Discord 和自定义 Apprise URL。
+## 来源声明
 
-## 可行性说明
+本项目基于并参考了 [cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder) 的思路和部分实现进行修改与扩展。
 
-参考项目原本通过安装参数区分：
+原项目使用 MIT License。本仓库保留了原项目的 MIT License 版权声明，并在此明确说明 LinkHive 是在该项目基础上的改造版本，主要变更包括：
+
+- 项目名称与部署路径改为 LinkHive。
+- 普通 SIM 与 eSIM 从安装期分离改为同一系统内运行期互斥切换。
+- 重新设计 Web 控制台 UI。
+- 增加登录鉴权、安全配置、二次认证接口与防暴力破解逻辑。
+- 增加 Docker 相关部署文件。
+
+如果你需要了解原始项目，请访问：[cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder)。
+
+## 功能特性
+
+- 普通 SIM 模式：查看基带状态、运营商、信号、网络制式、短信列表和短信转发服务状态。
+- eSIM 模式：读取 Profile、切换 Profile、关联短信中心、执行保活任务。
+- 模式互斥：普通 SIM 与 eSIM 不能同时启用，后端只接受 `physical` 或 `esim`。
+- 短信转发：通过 ModemManager 读取短信，并通过 Apprise 转发到多种渠道。
+- 通知渠道：支持 Bark、Telegram、Gotify、ntfy、Discord 和自定义 Apprise URL。
+- 网络配置：支持 APN、网络制式、手动选网等常见蜂窝网络操作。
+- 任务日志：控制台实时显示操作执行步骤。
+- 登录鉴权：默认启用账号密码登录，支持会话 Cookie、防暴力破解和二次认证接口。
+- 统一部署：一套安装文件同时支持普通 SIM 和 eSIM，运行时切换。
+
+## 系统要求
+
+推荐环境：
+
+- Debian 11/12 或 Ubuntu 22.04/24.04
+- systemd
+- Python 3
+- ModemManager / `mmcli`
+- NetworkManager / `nmcli`
+- libqmi / `qmicli`
+- 支持 Linux 的 4G/5G 模组
+
+eSIM 功能额外需要：
+
+- 可被 `lpac` 访问的 eUICC
+- 可用的 `/opt/lpac/bin/lpac`
+- LinkHive 安装的 `/usr/local/bin/lpac-switch`
+
+普通实体 SIM 场景不要求 eUICC。
+
+## 快速开始
+
+克隆仓库：
 
 ```bash
---sim-type esim
---sim-type physical
+git clone https://github.com/<your-name>/LinkHive.git
+cd LinkHive
 ```
 
-这个限制不是架构上必须分开部署，而是安装脚本在普通 SIM 模式下跳过 `lpac` 并禁用 eSIM 管理。LinkHive 已改成统一部署：
-
-- 安装时始终部署 `lpac-switch` 包装脚本。
-- 安装时尽量安装 `/opt/lpac/bin/lpac`。
-- 运行期通过 `/etc/linkhive.conf` 中的 `SIM_TYPE` 和 `ESIM_MANAGEMENT_ENABLED` 控制当前模式。
-- 前端通过 `/api/settings/sim-mode` 切换模式，后端只接受 `physical` 或 `esim`，保证互斥。
-
-注意：如果设备上没有可用的 `lpac`，仍可切换到 eSIM 模式，但 Profile 读取和切卡会不可用，控制台会给出告警。
-
-## 部署
+安装到设备：
 
 ```bash
 sudo sh ./deploy/install.sh
 ```
 
-默认初始进入 eSIM 模式。也可以指定普通 SIM 作为初始模式：
+默认初始模式为 eSIM。如果要以普通 SIM 模式启动：
 
 ```bash
 sudo sh ./deploy/install.sh --sim-type physical
 ```
 
-安装脚本会输出默认登录信息：
-
-```text
-[install] LinkHive 初始账号: admin
-[install] LinkHive 初始密码: admin
-```
-
-访问：
+访问控制台：
 
 ```text
 http://设备IP:8080
 ```
 
+默认登录信息：
+
+```text
+账号：admin
+密码：admin
+```
+
+生产环境建议首次登录后立即修改密码，并尽量放在可信内网或 HTTPS 反向代理后面。
+
+## Docker 运行
+
+仓库包含 `Dockerfile` 与 `docker-compose.yml`，可用于本地预览或容器化部署。
+
+```bash
+docker compose up -d
+```
+
+默认映射：
+
+```text
+http://127.0.0.1:7575
+```
+
+注意：如果容器要直接管理真实蜂窝模组，通常需要额外配置 `privileged`、设备映射、host network，以及宿主机上的 ModemManager/NetworkManager 权限。具体配置取决于工控机系统和模组接入方式。
+
 ## 配置文件
 
-主配置：
+主配置文件：
 
 ```text
 /etc/linkhive.conf
 ```
 
-常用字段：
+常见字段：
 
 ```env
 SIM_TYPE=esim
@@ -70,15 +119,45 @@ LINKHIVE_AUTH_ENABLED=1
 LINKHIVE_ADMIN_USER=admin
 LINKHIVE_PASSWORD_HASH=pbkdf2_sha256$...
 LINKHIVE_SESSION_SECRET=...
+LINKHIVE_BRUTE_FORCE_ENABLED=1
+LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS=5
+LINKHIVE_BRUTE_FORCE_LAN_ENABLED=1
+LINKHIVE_TRUST_PROXY_HEADERS=0
+LINKHIVE_COOKIE_SECURE=0
 ```
 
-短信通知配置：
+通知配置文件：
 
 ```text
 /etc/sms-forwarder.conf
 ```
 
-## 服务
+通知渠道通过 Apprise URL 配置，示例可参考：
+
+```text
+deploy/sms_forwarder/sms-forwarder.conf.example
+```
+
+## 反向代理与安全建议
+
+如果 LinkHive 放在 HTTPS 反向代理后面，并且代理会正确覆盖 `X-Forwarded-*` 请求头，可以开启：
+
+```env
+LINKHIVE_TRUST_PROXY_HEADERS=1
+LINKHIVE_COOKIE_SECURE=1
+```
+
+安全建议：
+
+- 不要直接暴露到公网。
+- 首次部署后修改默认密码。
+- 使用 HTTPS 反向代理时开启 `LINKHIVE_COOKIE_SECURE=1`。
+- 只有在可信反向代理后面才开启 `LINKHIVE_TRUST_PROXY_HEADERS=1`。
+- 不要把 `/etc/linkhive.conf`、`/etc/sms-forwarder.conf` 或任何包含 token/password 的文件提交到 Git。
+
+## 服务管理
+
+查看服务状态：
 
 ```bash
 systemctl status linkhive-admin.service
@@ -92,7 +171,14 @@ journalctl -u linkhive-admin.service -f
 journalctl -u sms-forwarder.service -f
 ```
 
-## 本地验证
+重启服务：
+
+```bash
+sudo systemctl restart linkhive-admin.service
+sudo systemctl restart sms-forwarder.service
+```
+
+## 本地开发
 
 后端语法检查：
 
@@ -103,10 +189,60 @@ python3 -X pycache_prefix=/private/tmp/linkhive-pycache -m py_compile \
   deploy/shared/notification_utils.py
 ```
 
-前端构建：
+前端开发：
 
 ```bash
 cd frontend
 pnpm install
-pnpm run build
+pnpm dev
 ```
+
+前端构建：
+
+```bash
+cd frontend
+pnpm build
+```
+
+同步前端构建产物到部署目录：
+
+```bash
+rsync -a --delete frontend/dist/ deploy/web_admin/frontend_dist/
+```
+
+## 打包发布
+
+构建部署包：
+
+```bash
+python3 scripts/build_deploy_package.py
+```
+
+`scripts/install_latest.sh` 用于从 GitHub Release 下载部署包并执行安装。
+
+## 目录结构
+
+```text
+deploy/                     设备侧部署文件
+deploy/web_admin/           Python Web API 与前端静态资源
+deploy/sms_forwarder/       短信转发服务
+deploy/esim/                lpac 包装脚本与可选资产
+frontend/                   React + Vite 前端
+scripts/                    构建、发布与远端验证脚本
+```
+
+## 已知限制
+
+- 本项目依赖 Linux 蜂窝网络工具链，macOS/Windows 只能做 UI 或接口预览。
+- eSIM 能力取决于硬件、eUICC、驱动、`lpac` 与模组 USB 模式。
+- 不同运营商的 APN、SMSC 和注册行为可能不同，需要按实际卡片调整。
+
+## License
+
+本项目使用 MIT License。
+
+本项目基于 [cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder) 修改，原项目版权声明已保留在 [LICENSE](./LICENSE) 中。使用、修改、分发本项目时请遵守 MIT License 要求。
+
+## 免责声明
+
+本项目仅用于合法的设备管理、短信转发和网络运维场景。使用者需要自行确认当地法律法规、运营商条款和设备授权要求。作者不对错误配置、违规使用、运营商限制、资费损失或设备损坏承担责任。

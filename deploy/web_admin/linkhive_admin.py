@@ -347,6 +347,14 @@ def auth_secret() -> str:
     return auth_config().get("LINKHIVE_PASSWORD_HASH", "linkhive-dev-secret")
 
 
+def config_flag(key: str, default: bool = False) -> bool:
+    config = auth_config()
+    raw = str(config.get(key, "")).strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "enabled"}
+
+
 def hash_password(password: str, salt: str) -> str:
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
     return digest.hex()
@@ -398,7 +406,19 @@ def totp_code(secret: str) -> str:
 
 
 def verify_totp(secret: str, code: str) -> bool:
-    return code == totp_code(secret)
+    normalized = code.strip()
+    if not re.fullmatch(r"\d{6}", normalized):
+        return False
+    try:
+        secret_bytes = b32decode(secret + "====")
+    except Exception:
+        return False
+    current_counter = int(time.time() // 30)
+    for counter in range(current_counter - 1, current_counter + 2):
+        expected = str(_totp_hotp(secret_bytes, counter)).zfill(6)
+        if hmac.compare_digest(normalized, expected):
+            return True
+    return False
 
 
 def totp_otpauth_url(secret: str, label: str = "admin") -> str:
@@ -420,20 +440,20 @@ def _is_lan_ip(ip: str) -> bool:
 
 def brute_force_enabled() -> bool:
     config = read_env_config(APP_CONFIG_PATH)
-    return config.get("LINKHIVE_BRUTE_FORCE_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+    return config.get("LINKHIVE_BRUTE_FORCE_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
 
 
 def brute_force_max_attempts() -> int:
     config = read_env_config(APP_CONFIG_PATH)
     try:
-        return int(config.get("LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS", "5"))
+        return max(1, int(config.get("LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS", "5")))
     except ValueError:
         return 5
 
 
 def brute_force_lan_enabled() -> bool:
     config = read_env_config(APP_CONFIG_PATH)
-    return config.get("LINKHIVE_BRUTE_FORCE_LAN_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+    return config.get("LINKHIVE_BRUTE_FORCE_LAN_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
 
 
 def banned_ips() -> set[str]:
@@ -477,12 +497,12 @@ def is_ip_banned(ip: str) -> bool:
     _cleanup_expired_attempts(now)
     max_attempts = brute_force_max_attempts()
     with _FAILED_ATTEMPTS_LOCK:
-        if len(_FAILED_ATTEMPTS.get(ip, [])) >= max_attempts:
-            new_banned = banned_ips() | {ip}
-            save_banned_ips(new_banned)
-            with _FAILED_ATTEMPTS_LOCK:
-                _FAILED_ATTEMPTS.pop(ip, None)
-            return True
+        should_ban = len(_FAILED_ATTEMPTS.get(ip, [])) >= max_attempts
+        if should_ban:
+            _FAILED_ATTEMPTS.pop(ip, None)
+    if should_ban:
+        save_banned_ips(banned_ips() | {ip})
+        return True
     return False
 
 
@@ -2459,9 +2479,49 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def _client_ip(self) -> str:
         forwarded = self.headers.get("X-Forwarded-For", "")
-        if forwarded:
+        if config_flag("LINKHIVE_TRUST_PROXY_HEADERS") and forwarded:
             return forwarded.split(",")[0].strip()
         return self.client_address[0]
+
+    def _origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin", "").strip()
+        if not origin:
+            referer = self.headers.get("Referer", "").strip()
+            if not referer:
+                return True
+            parsed_referer = urlparse(referer)
+            origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+
+        host = self.headers.get("Host", "").strip()
+        allowed = {f"http://{host}", f"https://{host}"}
+        if config_flag("LINKHIVE_TRUST_PROXY_HEADERS"):
+            forwarded_host = self.headers.get("X-Forwarded-Host", "").strip()
+            forwarded_proto = self.headers.get("X-Forwarded-Proto", "").strip() or "https"
+            if forwarded_host:
+                allowed.add(f"{forwarded_proto}://{forwarded_host}")
+        return origin in allowed
+
+    def _require_same_origin(self) -> bool:
+        if self._origin_allowed():
+            return True
+        self._write_json(403, {"error": "请求来源不匹配"})
+        return False
+
+    def _cookie_header(self, value: str, *, max_age: int) -> str:
+        parts = [
+            f"{AUTH_COOKIE_NAME}={value}",
+            "Path=/",
+            "HttpOnly",
+            "SameSite=Lax",
+            f"Max-Age={max_age}",
+        ]
+        forwarded_https = (
+            config_flag("LINKHIVE_TRUST_PROXY_HEADERS")
+            and self.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
+        )
+        if config_flag("LINKHIVE_COOKIE_SECURE") or forwarded_https:
+            parts.append("Secure")
+        return "; ".join(parts)
 
     def _authenticated(self) -> bool:
         return valid_session_cookie(self.headers.get("Cookie", ""))
@@ -2539,6 +2599,8 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/") and not self._require_same_origin():
+                return
             data = self._read_json_body()
             if path == "/api/auth/login":
                 client_ip = self._client_ip()
@@ -2560,6 +2622,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
                 if totp_enabled():
                     if not verify_totp(totp_secret(), totp_code_value):
+                        record_failed_attempt(client_ip)
                         self._write_json(401, {"error": "二次认证验证码不正确"})
                         return
                 cookie_value = make_session_cookie(username)
@@ -2567,10 +2630,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     200,
                     {"ok": True, "authenticated": True, "username": username},
                     extra_headers={
-                        "Set-Cookie": (
-                            f"{AUTH_COOKIE_NAME}={cookie_value}; Path=/; HttpOnly; SameSite=Lax; "
-                            f"Max-Age={AUTH_SESSION_TTL_SECONDS}"
-                        )
+                        "Set-Cookie": self._cookie_header(cookie_value, max_age=AUTH_SESSION_TTL_SECONDS)
                     },
                 )
                 return
@@ -2578,10 +2638,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._write_json(
                     200,
                     {"ok": True, "authenticated": False},
-                    extra_headers={"Set-Cookie": f"{AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"},
+                    extra_headers={"Set-Cookie": self._cookie_header("", max_age=0)},
                 )
                 return
             if path == "/api/auth/change-password":
+                if not self._require_auth():
+                    return
                 if not auth_enabled():
                     self._write_json(400, {"error": "当前未启用密码认证"})
                     return
@@ -2602,12 +2664,14 @@ class AppHandler(BaseHTTPRequestHandler):
                         self._write_json(400, {"error": "新密码不能少于 4 位"})
                         return
                     salt = secrets.token_hex(16)
-                    new_hash = f"pbkdf2:sha256:{salt}${hash_password(new_password, salt)}"
+                    new_hash = f"pbkdf2_sha256${salt}${hash_password(new_password, salt)}"
                     config["LINKHIVE_PASSWORD_HASH"] = new_hash
                 write_env_config(APP_CONFIG_PATH, config)
                 self._write_json(200, {"ok": True, "message": "账户信息已修改"})
                 return
             if path == "/api/auth/totp-setup":
+                if not self._require_auth():
+                    return
                 secret = generate_totp_secret()
                 otpauth_url = totp_otpauth_url(secret, auth_username())
                 config = read_env_config(APP_CONFIG_PATH)
@@ -2617,6 +2681,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._write_json(200, {"ok": True, "secret": secret, "otpauth_url": otpauth_url})
                 return
             if path == "/api/auth/totp-verify":
+                if not self._require_auth():
+                    return
                 code = str(data.get("code", "")).strip()
                 secret = totp_secret()
                 if not secret:

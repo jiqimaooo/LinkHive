@@ -351,6 +351,11 @@ generated_password = ""
 config.setdefault("LINKHIVE_AUTH_ENABLED", "1")
 config.setdefault("LINKHIVE_ADMIN_USER", "admin")
 config.setdefault("LINKHIVE_SESSION_SECRET", secrets.token_urlsafe(32))
+config.setdefault("LINKHIVE_TRUST_PROXY_HEADERS", "0")
+config.setdefault("LINKHIVE_COOKIE_SECURE", "0")
+config.setdefault("LINKHIVE_BRUTE_FORCE_ENABLED", "1")
+config.setdefault("LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS", "5")
+config.setdefault("LINKHIVE_BRUTE_FORCE_LAN_ENABLED", "1")
 if not config.get("LINKHIVE_PASSWORD_HASH"):
     generated_password = "admin"
     salt = secrets.token_hex(16)

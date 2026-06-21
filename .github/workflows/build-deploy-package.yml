@@ -109,7 +109,7 @@ jobs:
             ## 安装命令
 
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/cyDione/LinkHive/main/scripts/install_latest.sh | sudo sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install_latest.sh | sudo sh
             ```
 
             ## 资产说明
