@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Toaster } from "sonner"
 
+import { Logo } from "@/components/shared/logo"
+
 export default function LoginPage() {
   const { loginForm, setLoginForm, isLoggingIn, totpRequired, banRemaining, login } = useAppContext()
   const [totpCode, setTotpCode] = useState("")
@@ -43,7 +45,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-4">
       <Card className="w-full max-w-md border-slate-200 bg-white shadow-[0_18px_60px_rgba(15,23,42,0.08)]">
         <CardHeader className="gap-2">
-          <div className="mb-3 flex size-12 items-center justify-center rounded-xl bg-blue-600 text-base font-bold text-white shadow-lg shadow-blue-200">LH</div>
+          <Logo className="mb-3 size-14" />
           <CardTitle className="text-xl font-semibold">LinkHive</CardTitle>
           <CardDescription>登录后管理 SIM、eSIM 与短信转发。</CardDescription>
         </CardHeader>

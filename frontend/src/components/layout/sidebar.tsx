@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
+import { Logo } from "@/components/shared/logo"
 import { useAppContext } from "@/hooks/app-context"
 
 const MAIN_MENU = [
@@ -94,9 +95,7 @@ export function Sidebar() {
     <aside className="flex flex-col border-r border-slate-200 bg-white/95 px-3 py-4 shadow-[8px_0_30px_rgba(15,23,42,0.04)] h-screen sticky top-0 overflow-y-auto">
       {/* Brand */}
       <div className="flex items-center gap-3 px-2">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-sm font-bold text-white shadow-lg shadow-blue-200">
-          LH
-        </div>
+        <Logo className="size-10 shrink-0" />
         <div className="min-w-0">
           <div className="text-lg font-semibold leading-6 truncate">LinkHive</div>
           <div className="text-xs leading-4 text-slate-500 truncate">SIM 管理平台</div>
