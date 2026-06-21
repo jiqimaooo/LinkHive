@@ -21,9 +21,8 @@ jobs:
       - name: Generate version
         id: version
         run: |
-          build_time=$(TZ=Asia/Shanghai date +'%Y.%m.%d-%H%M')
-          short_sha="${GITHUB_SHA::7}"
-          version="v${build_time}-${short_sha}"
+          build_time=$(TZ=Asia/Shanghai date +'%Y.%m.%d')
+          version="v${build_time}-${{ github.run_number }}"
           echo "tag=${version}" >> "${GITHUB_OUTPUT}"
           echo "build_time=${build_time}" >> "${GITHUB_OUTPUT}"
 
