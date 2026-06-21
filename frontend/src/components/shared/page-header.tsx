@@ -28,7 +28,7 @@ export function PageHeader({
               </div>
             ) : null}
             <div className="flex flex-col gap-1">
-              <CardTitle className="text-xl sm:text-2xl">{title}</CardTitle>
+              <CardTitle className="text-xl font-semibold leading-7">{title}</CardTitle>
               {description ? <CardDescription>{description}</CardDescription> : null}
             </div>
           </div>

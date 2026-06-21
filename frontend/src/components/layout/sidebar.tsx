@@ -96,8 +96,8 @@ export function Sidebar() {
           LH
         </div>
         <div className="min-w-0">
-          <div className="text-base font-semibold leading-5 truncate">LinkHive</div>
-          <div className="text-xs text-slate-500 truncate">SIM 管理平台</div>
+          <div className="text-lg font-semibold leading-6 truncate">LinkHive</div>
+          <div className="text-xs leading-4 text-slate-500 truncate">SIM 管理平台</div>
         </div>
       </div>
 
@@ -146,9 +146,9 @@ export function Sidebar() {
       </nav>
 
       {/* 用户信息 */}
-      <div className="mt-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-        <div className="mb-1 text-xs font-medium text-slate-500">当前登录</div>
-        <div className="truncate text-slate-800 font-medium">{authStatus?.username ?? "--"}</div>
+      <div className="mt-auto rounded-xl border border-slate-200 bg-slate-50 p-3">
+        <div className="mb-1 text-xs font-normal text-slate-500">当前登录</div>
+        <div className="truncate text-sm font-semibold text-slate-800">{authStatus?.username ?? "--"}</div>
         <Button
           type="button"
           variant="outline"

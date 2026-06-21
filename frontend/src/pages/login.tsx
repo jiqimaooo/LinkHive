@@ -22,7 +22,7 @@ export default function LoginPage() {
           <div className="mb-3 flex size-12 items-center justify-center rounded-xl bg-blue-600 text-base font-bold text-white shadow-lg shadow-blue-200">
             LH
           </div>
-          <CardTitle className="text-2xl">LinkHive</CardTitle>
+          <CardTitle className="text-xl font-semibold">LinkHive</CardTitle>
           <CardDescription>登录后管理 SIM、eSIM 与短信转发。</CardDescription>
         </CardHeader>
         <CardContent>
