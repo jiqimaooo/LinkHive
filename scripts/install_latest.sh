@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO_OWNER="${REPO_OWNER:-cyDione}"
+REPO_OWNER="${REPO_OWNER:-}"
 REPO_NAME="${REPO_NAME:-LinkHive}"
 ASSET_NAME="${ASSET_NAME:-LinkHive-deploy.zip}"
 
@@ -24,7 +24,7 @@ die() {
 usage() {
     cat <<'EOF'
 Usage:
-  curl -fsSL <url> | sudo sh -s -- [--sim-type esim|physical]
+  curl -fsSL <url> | sudo REPO_OWNER=<owner> REPO_NAME=LinkHive sh -s -- [--sim-type esim|physical]
 
 Options:
   --sim-type esim      默认模式，启用 eSIM 管理与短信转发
@@ -42,6 +42,12 @@ require_root() {
     if [ "$(id -u)" != "0" ]; then
         die "请使用 root 运行，例如：curl -fsSL <url> | sudo sh"
     fi
+}
+
+require_repo_config() {
+    [ -n "${REPO_OWNER}" ] || die "请设置 REPO_OWNER，例如：sudo REPO_OWNER=<owner> REPO_NAME=LinkHive sh"
+    [ -n "${REPO_NAME}" ] || die "请设置 REPO_NAME"
+    export REPO_OWNER REPO_NAME
 }
 
 download_file() {
@@ -131,6 +137,7 @@ parse_args() {
 main() {
     parse_args "$@"
     require_root
+    require_repo_config
     trap cleanup EXIT INT TERM
 
     TMP_DIR=$(mktemp -d /tmp/linkhive.XXXXXX)
@@ -138,26 +145,15 @@ main() {
     extract_dir="${TMP_DIR}/package"
     mkdir -p "${extract_dir}"
 
-    source_url="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/zip/refs/heads/main"
     release_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${ASSET_NAME}"
 
-    log "优先下载源码包"
-    if download_file "${source_url}" "${archive_path}"; then
-        log "已下载源码包"
-    else
-        warn "源码包下载失败，尝试下载最新 Release 包"
-        download_file "${release_url}" "${archive_path}" || die "源码包与 Release 包均下载失败"
-    fi
+    log "下载最新 Release 部署包"
+    download_file "${release_url}" "${archive_path}" || die "Release 部署包下载失败，请确认已发布 ${ASSET_NAME}"
 
     ensure_extract_dependencies
 
     log "解压安装包"
-    if ! extract_zip "${archive_path}" "${extract_dir}"; then
-        warn "安装包解压失败，尝试重新下载源码包"
-        rm -f "${archive_path}"
-        download_file "${source_url}" "${archive_path}"
-        extract_zip "${archive_path}" "${extract_dir}"
-    fi
+    extract_zip "${archive_path}" "${extract_dir}"
 
     if [ -f "${extract_dir}/deploy/install.sh" ]; then
         package_root="${extract_dir}"

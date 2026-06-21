@@ -13,6 +13,11 @@ INCLUDE_PATHS = [
 ]
 SKIP_DIR_NAMES = {"__pycache__"}
 SKIP_SUFFIXES = {".pyc"}
+SKIP_PATTERNS = ("deploy/esim/lpac-linux-*.zip",)
+
+
+def should_skip(relative: Path) -> bool:
+    return any(relative.match(pattern) for pattern in SKIP_PATTERNS)
 
 
 def iter_files(repo_root: Path):
@@ -30,10 +35,20 @@ def iter_files(repo_root: Path):
                     continue
                 if child.suffix in SKIP_SUFFIXES:
                     continue
+                if should_skip(relative):
+                    continue
                 yield child, relative
 
 
 def build_package(repo_root: Path, output_path: Path) -> None:
+    frontend_index = repo_root / "deploy/web_admin/frontend_dist/index.html"
+    if not frontend_index.exists():
+        raise SystemExit(
+            "缺少 deploy/web_admin/frontend_dist/index.html。"
+            "请先构建前端并同步到 deploy/web_admin/frontend_dist，"
+            "或使用 GitHub Actions 生成 Release 部署包。"
+        )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         output_path.unlink()

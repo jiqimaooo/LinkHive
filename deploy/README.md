@@ -29,8 +29,9 @@ ESIM_MANAGEMENT_ENABLED=1
 
 优先级：
 
-- 优先使用本地匹配的 `deploy/esim/lpac-linux-*.zip`。
+- 优先使用本地匹配的 `deploy/esim/lpac-linux-*.zip`，这个文件适合放在私有打包环境或 Release 构建环境，不建议提交到源码仓库。
 - 如果本地没有，下载最新 release 中的 `lpac-assets.json`。
+- 如果最新 release 没有，回退到固定 tag `lpac-assets` 对应 release 中的 `lpac-assets.json`。
 - 按 `arch`、可选 `os/os_version` 和 `glibc` 选择最匹配的资产。
 
 推荐命名：
@@ -39,4 +40,4 @@ ESIM_MANAGEMENT_ENABLED=1
 - `lpac-linux-aarch64-debian12-glibc2.36.zip`
 - `lpac-linux-x86_64-ubuntu22.04-glibc2.35.zip`
 
-发布工作流会扫描 `deploy/esim/lpac-linux-*.zip`，生成 `lpac-assets.json` 并随部署包一起发布。
+发布工作流会扫描构建环境中的 `lpac-linux-*.zip`，生成 `lpac-assets.json` 并随 Release 一起发布。更推荐把长期可用的 lpac 资产放到固定 tag `lpac-assets` 的 Release 中，源码仓库默认只保留 `lpac` 包装脚本和 `lpac-switch.sh`，不提交预编译二进制包。

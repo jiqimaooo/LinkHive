@@ -29,11 +29,19 @@ LPAC_HOME_DST="/opt/lpac"
 RUNTIME_HOME_DST="/opt/linkhive"
 RUNTIME_VENV_DST="${RUNTIME_HOME_DST}/venv"
 
-REPO_OWNER="${REPO_OWNER:-cyDione}"
+REPO_OWNER="${REPO_OWNER:-}"
 REPO_NAME="${REPO_NAME:-LinkHive}"
 LPAC_MANIFEST_NAME="${LPAC_MANIFEST_NAME:-lpac-assets.json}"
-LPAC_RELEASE_BASE_URL="${LPAC_RELEASE_BASE_URL:-https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download}"
+LPAC_RELEASE_BASE_URL="${LPAC_RELEASE_BASE_URL:-}"
+LPAC_FALLBACK_RELEASE_BASE_URL="${LPAC_FALLBACK_RELEASE_BASE_URL:-}"
 LPAC_AUTO_DOWNLOAD="${LPAC_AUTO_DOWNLOAD:-1}"
+
+if [ -z "${LPAC_RELEASE_BASE_URL}" ] && [ -n "${REPO_OWNER}" ] && [ -n "${REPO_NAME}" ]; then
+    LPAC_RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"
+fi
+if [ -z "${LPAC_FALLBACK_RELEASE_BASE_URL}" ] && [ -n "${REPO_OWNER}" ] && [ -n "${REPO_NAME}" ]; then
+    LPAC_FALLBACK_RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/lpac-assets"
+fi
 
 SIM_TYPE="esim"
 ARCH="unknown"
@@ -73,6 +81,7 @@ Options:
 Environment:
   REPO_OWNER / REPO_NAME
   LPAC_RELEASE_BASE_URL
+  LPAC_FALLBACK_RELEASE_BASE_URL
   LPAC_AUTO_DOWNLOAD=1
 EOF
 }
@@ -150,7 +159,14 @@ parse_args() {
 }
 
 copy_frontend_dist() {
-    require_file "${FRONTEND_DIST_SRC}/index.html"
+    if [ ! -f "${FRONTEND_DIST_SRC}/index.html" ] && [ -f "${PROJECT_DIR}/frontend/dist/index.html" ]; then
+        FRONTEND_DIST_SRC="${PROJECT_DIR}/frontend/dist"
+    fi
+
+    if [ ! -f "${FRONTEND_DIST_SRC}/index.html" ]; then
+        die "缺少前端静态资源。请使用 GitHub Release 一键安装包，或先执行: cd frontend && pnpm install && pnpm build && rsync -a --delete dist/ ../deploy/web_admin/frontend_dist/"
+    fi
+
     rm -rf "${FRONTEND_DIST_DST}"
     mkdir -p "${FRONTEND_DIST_DST}"
     cp -a "${FRONTEND_DIST_SRC}/." "${FRONTEND_DIST_DST}/"
@@ -643,22 +659,30 @@ download_remote_lpac_bundle() {
     if [ "${LPAC_AUTO_DOWNLOAD}" != "1" ]; then
         return
     fi
-
-    manifest_path="${TMP_DIR}/${LPAC_MANIFEST_NAME}"
-    if ! download_file "${LPAC_RELEASE_BASE_URL}/${LPAC_MANIFEST_NAME}" "${manifest_path}"; then
+    if [ -z "${LPAC_RELEASE_BASE_URL}" ] && [ -z "${LPAC_FALLBACK_RELEASE_BASE_URL}" ]; then
         return
     fi
 
-    asset_name=$(select_lpac_asset_from_manifest "${manifest_path}" || true)
-    if [ -z "${asset_name}" ]; then
-        return
-    fi
+    for base_url in "${LPAC_RELEASE_BASE_URL}" "${LPAC_FALLBACK_RELEASE_BASE_URL}"; do
+        [ -n "${base_url}" ] || continue
 
-    output_path="${TMP_DIR}/${asset_name}"
-    log "下载匹配的 lpac 资产: ${asset_name}"
-    if download_file "${LPAC_RELEASE_BASE_URL}/${asset_name}" "${output_path}"; then
-        printf '%s' "${output_path}"
-    fi
+        manifest_path="${TMP_DIR}/${LPAC_MANIFEST_NAME}"
+        if ! download_file "${base_url}/${LPAC_MANIFEST_NAME}" "${manifest_path}"; then
+            continue
+        fi
+
+        asset_name=$(select_lpac_asset_from_manifest "${manifest_path}" || true)
+        if [ -z "${asset_name}" ]; then
+            continue
+        fi
+
+        output_path="${TMP_DIR}/${asset_name}"
+        log "下载匹配的 lpac 资产: ${asset_name}"
+        if download_file "${base_url}/${asset_name}" "${output_path}"; then
+            printf '%s' "${output_path}"
+            return
+        fi
+    done
 }
 
 install_lpac_bundle() {

@@ -31,8 +31,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,15 +44,15 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Lint frontend
         working-directory: frontend
-        run: npm run lint
+        run: pnpm lint
 
       - name: Build frontend
         working-directory: frontend
-        run: npm run build
+        run: pnpm build
 
       - name: Validate Python scripts
         run: |
@@ -63,21 +66,22 @@ jobs:
           mkdir -p deploy/web_admin/frontend_dist
           cp -a frontend/dist/. deploy/web_admin/frontend_dist/
 
+      - name: Collect lpac bundles
+        run: |
+          mkdir -p dist
+          find deploy/esim -maxdepth 1 -type f -name 'lpac-linux-*.zip' -exec cp {} dist/ \;
+
+      - name: Build lpac asset manifest
+        run: |
+          python scripts/build_lpac_manifest.py \
+            --assets-dir dist \
+            --output dist/lpac-assets.json
+
       - name: Build deploy zip
         run: |
           python scripts/build_deploy_package.py \
             --output dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip \
             --copy-to dist/LinkHive-deploy.zip
-
-      - name: Build lpac asset manifest
-        run: |
-          python scripts/build_lpac_manifest.py \
-            --assets-dir deploy/esim \
-            --output dist/lpac-assets.json
-
-      - name: Collect lpac bundles
-        run: |
-          find deploy/esim -maxdepth 1 -type f -name 'lpac-linux-*.zip' -exec cp {} dist/ \;
 
       - name: Upload deploy artifact
         uses: actions/upload-artifact@v4
@@ -88,7 +92,7 @@ jobs:
             dist/LinkHive-deploy.zip
             dist/lpac-assets.json
             dist/lpac-linux-*.zip
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Publish release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -109,7 +113,7 @@ jobs:
             ## 安装命令
 
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install_latest.sh | sudo sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install_latest.sh | sudo REPO_OWNER=${{ github.repository_owner }} REPO_NAME=${{ github.event.repository.name }} sh
             ```
 
             ## 资产说明

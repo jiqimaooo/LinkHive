@@ -10,6 +10,7 @@ node_modules/
 .pnpm-store/
 dist/
 frontend/dist/
+deploy/web_admin/frontend_dist/
 
 .env
 .env.*
@@ -30,3 +31,5 @@ sms-forwarder.conf
 LinkHive-deploy-*.zip
 LinkHive-deploy.zip
 eSIM-SMS-Forwarder-deploy-*.zip
+deploy/esim/lpac-linux-*.zip
+lpac-linux-*.zip
