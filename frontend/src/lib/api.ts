@@ -6,7 +6,9 @@ export async function requestJson<T>(input: string, init?: RequestInit): Promise
   })
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
   if (!response.ok) {
-    throw new Error(String(payload.error ?? `请求失败：${response.status}`))
+    const err = new Error(String(payload.error ?? `请求失败：${response.status}`)) as Error & { data?: Record<string, unknown> }
+    err.data = payload
+    throw err
   }
   return payload as T
 }

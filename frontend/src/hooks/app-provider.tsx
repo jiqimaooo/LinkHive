@@ -105,6 +105,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [syncFormsFromStatus])
 
   const [totpRequired, setTotpRequired] = useState(false)
+  const [banRemaining, setBanRemaining] = useState(0)
 
   const login = useCallback(async (totpCode?: string) => {
     setIsLoggingIn(true)
@@ -129,7 +130,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setTotpRequired(false)
       await refreshStatus(false, true)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "登录失败")
+      const err = error as Error & { data?: Record<string, unknown> }
+      if (err.data?.ban_remaining && typeof err.data.ban_remaining === 'number') {
+        setBanRemaining(err.data.ban_remaining as number)
+      } else {
+        toast.error(err.message || "登录失败")
+      }
     } finally {
       setIsLoggingIn(false)
     }
@@ -494,7 +500,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const actionBusy = Boolean(activeAction || submittingActionLabel)
 
   const ctx: AppContextType = {
-    authStatus, loginForm, setLoginForm, isLoggingIn, totpRequired, login, logout,
+    authStatus, loginForm, setLoginForm, isLoggingIn, totpRequired, banRemaining, login, logout,
     status, isLoadingStatus, isRefreshing, autoRefresh, setAutoRefresh, refreshStatus,
     logs, activeAction, submittingActionLabel, actionBusy, appendLog, setLogs, runAction,
     switchingMode, switchSimMode,

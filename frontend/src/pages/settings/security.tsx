@@ -32,7 +32,6 @@ export default function SecurityPage() {
   const [banEnabled, setBanEnabled] = useState(false)
   const [banMaxAttempts, setBanMaxAttempts] = useState("5")
   const [banLanEnabled, setBanLanEnabled] = useState(false)
-  const [banLoading, setBanLoading] = useState(false)
   const [unbanLoading, setUnbanLoading] = useState<string | null>(null)
 
   const loadTotpStatus = useCallback(async () => {
@@ -66,20 +65,21 @@ export default function SecurityPage() {
   const handleTotpVerify = async () => { if (!totpCode || totpCode.length !== 6) { toast.error("请输入 6 位验证码"); return }; setTotpLoading(true); try { await requestJson("/api/auth/totp-verify", { method: "POST", body: JSON.stringify({ code: totpCode }) }); toast.success("已启用"); setTotpSetup(null); setTotpCode(""); setTotpEnabled(true) } catch (e) { toast.error(e instanceof Error ? e.message : "失败") } finally { setTotpLoading(false) } }
   const handleTotpDisable = async () => { setTotpLoading(true); try { await requestJson("/api/auth/totp-disable", { method: "POST" }); toast.success("已禁用"); setTotpEnabled(false); setTotpSetup(null); setTotpCode("") } catch (e) { toast.error(e instanceof Error ? e.message : "失败") } finally { setTotpLoading(false) } }
 
-  const handleBanSave = async () => {
-    setBanLoading(true)
+  const saveBanSettings = async (overrides: Partial<{ enabled: boolean; max_attempts: string; lan_enabled: boolean }>) => {
+    const current = { enabled: banEnabled, max_attempts: banMaxAttempts, lan_enabled: banLanEnabled, ...overrides }
     try {
-      await requestJson("/api/auth/ban-settings", { method: "POST", body: JSON.stringify({ enabled: banEnabled, max_attempts: banMaxAttempts, lan_enabled: banLanEnabled }) })
-      toast.success("配置已保存")
+      await requestJson("/api/auth/ban-settings", { method: "POST", body: JSON.stringify(current) })
       void loadBanStatus()
-    } catch (e) { toast.error(e instanceof Error ? e.message : "保存失败") }
-    finally { setBanLoading(false) }
+    } catch { /* silent */ }
   }
 
   const handleUnban = async (ip: string) => {
     setUnbanLoading(ip)
-    try { await requestJson("/api/auth/unban-ip", { method: "POST", body: JSON.stringify({ ip }) }); toast.success(`已解封 ${ip}`); void loadBanStatus() }
-    catch (e) { toast.error(e instanceof Error ? e.message : "解封失败") }
+    try {
+      await requestJson("/api/auth/unban-ip", { method: "POST", body: JSON.stringify({ ip }) })
+      toast.success(`已解封 ${ip}`)
+      await loadBanStatus()
+    } catch (e) { toast.error(e instanceof Error ? e.message : "解封失败") }
     finally { setUnbanLoading(null) }
   }
 
@@ -121,7 +121,7 @@ export default function SecurityPage() {
                 <div className="text-sm text-muted-foreground space-y-1"><p>扫描二维码</p><p>或手动输入：</p><code className="text-xs bg-muted px-1.5 py-0.5 rounded">{totpSetup.secret}</code></div>
               </div>
               <div className="flex items-center gap-2">
-                <Input value={totpCode} onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入应用生成的 6 位验证码" className="w-36 text-center text-lg tracking-widest" maxLength={6} />
+                <Input value={totpCode} onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入认证器生成的 6 位验证码" className="w-64 text-center text-lg tracking-widest" maxLength={6} />
                 <Button onClick={handleTotpVerify} disabled={totpLoading || totpCode.length !== 6}>验证并启用</Button>
               </div>
             </div>
@@ -140,38 +140,43 @@ export default function SecurityPage() {
           <p className="text-sm text-muted-foreground">多次登录失败后自动封禁 IP，防止公网暴露时被暴力破解。</p>
           <div className="flex items-center justify-between rounded-xl border p-3">
             <div><div className="text-sm font-medium">启用防暴力破解</div><div className="text-xs text-muted-foreground">开启后，连续登录失败的 IP 将被自动封禁</div></div>
-            <Switch checked={banEnabled} onCheckedChange={setBanEnabled} />
+            <Switch checked={banEnabled} onCheckedChange={(v) => { setBanEnabled(v); saveBanSettings({ enabled: v }) }} />
           </div>
-          <div className="grid gap-2">
-            <Label htmlFor="ban-max">最大尝试次数</Label>
-            <Input id="ban-max" type="number" min={1} max={100} value={banMaxAttempts} onChange={(e) => setBanMaxAttempts(e.target.value)} className="w-24" />
-            <p className="text-xs text-muted-foreground">24 小时内连续失败达到此次数后封禁 IP</p>
-          </div>
-          <div className="flex items-center justify-between rounded-xl border p-3">
-            <div><div className="text-sm font-medium">内网生效</div><div className="text-xs text-muted-foreground">开启后，内网 IP（192.168.x.x 等）也会被封禁。默认关闭</div></div>
-            <Switch checked={banLanEnabled} onCheckedChange={setBanLanEnabled} />
-          </div>
-          <Button onClick={handleBanSave} disabled={banLoading}>保存配置</Button>
-
-          <div className="rounded-xl border p-4">
-            <div className="text-sm font-medium mb-2">已封禁 IP（{banStatus.banned_ips.length} 个）</div>
-            {banStatus.banned_ips.length > 0 ? (
-              <ScrollArea className="max-h-48">
-                <div className="space-y-1.5">
-                  {banStatus.banned_ips.map((ip) => (
-                    <div key={ip} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
-                      <code className="text-xs">{ip}</code>
-                      <Button type="button" size="xs" variant="outline" onClick={() => handleUnban(ip)} disabled={unbanLoading === ip}>
-                        <Trash2Icon className="size-3" />解封
-                      </Button>
-                    </div>
-                  ))}
+          {banEnabled ? (
+            <>
+              <div className="flex items-center justify-between rounded-xl border p-3">
+                <div><div className="text-sm font-medium">内网生效</div><div className="text-xs text-muted-foreground">开启后，内网 IP（192.168.x.x 等）也会被封禁。默认关闭</div></div>
+                <Switch checked={banLanEnabled} onCheckedChange={(v) => { setBanLanEnabled(v); saveBanSettings({ lan_enabled: v }) }} />
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="text-sm font-medium mb-2">最大尝试次数</div>
+                <div className="flex items-center gap-2">
+                  <Input id="ban-max" type="number" min={1} max={100} value={banMaxAttempts} onChange={(e) => setBanMaxAttempts(e.target.value)} className="w-24" />
+                  <Button size="sm" variant="outline" onClick={() => saveBanSettings({ max_attempts: banMaxAttempts })}>保存</Button>
                 </div>
-              </ScrollArea>
-            ) : (
-              <p className="text-xs text-muted-foreground">暂无被封禁 IP</p>
-            )}
-          </div>
+                <p className="text-xs text-muted-foreground mt-2">24 小时内连续失败达到此次数后封禁 IP</p>
+              </div>
+              <div className="rounded-xl border p-4">
+                <div className="text-sm font-medium mb-2">已封禁 IP（{banStatus.banned_ips.length} 个）</div>
+                {banStatus.banned_ips.length > 0 ? (
+                  <ScrollArea className="max-h-48">
+                    <div className="space-y-1.5">
+                      {banStatus.banned_ips.map((ip) => (
+                        <div key={ip} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
+                          <code className="text-xs">{ip}</code>
+                          <Button type="button" size="xs" variant="outline" onClick={() => handleUnban(ip)} disabled={unbanLoading === ip}>
+                            <Trash2Icon className="size-3" />解封
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无被封禁 IP</p>
+                )}
+              </div>
+            </>
+          ) : null}
         </CardContent>
           </Card>
         </div>
