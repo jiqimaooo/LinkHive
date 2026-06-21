@@ -16,6 +16,7 @@ import ProfilesPage from "@/pages/sim-cards/profiles"
 import KeepalivePage from "@/pages/sim-cards/keepalive"
 import ModeSwitchPage from "@/pages/settings/mode"
 import SecurityPage from "@/pages/settings/security"
+import AboutPage from "@/pages/settings/about"
 import LogsPage from "@/pages/logs"
 
 function AppLayout() {
@@ -39,6 +40,7 @@ function AppLayout() {
               <Route path="/settings" element={<Navigate to="/settings/mode" replace />} />
               <Route path="/settings/mode" element={<ModeSwitchPage />} />
               <Route path="/settings/security" element={<SecurityPage />} />
+              <Route path="/settings/about" element={<AboutPage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>

@@ -10,6 +10,7 @@ import {
   ScrollTextIcon,
   Settings2Icon,
   ShieldCheckIcon,
+  InfoIcon,
   SmartphoneIcon,
   TerminalIcon,
   SendIcon,
@@ -61,6 +62,7 @@ const MAIN_MENU = [
     children: [
       { title: "模式切换", path: "/settings/mode", icon: SmartphoneNfcIcon },
       { title: "安全设置", path: "/settings/security", icon: ShieldCheckIcon },
+      { title: "关于", path: "/settings/about", icon: InfoIcon },
     ],
   },
   {
