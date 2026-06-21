@@ -26,7 +26,7 @@ jobs:
           seq=${{ github.run_number }}
           major=$(( (seq + 9) / 10 ))
           minor=$(( (seq - 1) % 10 ))
-          version="V${major}.${minor} (${build_date})"
+          version="V${major}.${minor}-${build_date}"
           echo "tag=${version}" >> "${GITHUB_OUTPUT}"
           echo "build_time=${build_time}" >> "${GITHUB_OUTPUT}"
           echo "build_date=${build_date}" >> "${GITHUB_OUTPUT}"
