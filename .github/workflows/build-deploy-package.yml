@@ -22,7 +22,10 @@ jobs:
         id: version
         run: |
           build_time=$(TZ=Asia/Shanghai date +'%Y.%m.%d')
-          version="v${build_time}-${{ github.run_number }}"
+          seq=${{ github.run_number }}
+          major=$(( (seq + 9) / 10 ))
+          minor=$(( (seq - 1) % 10 ))
+          version="v${build_time}-${major}.${minor}"
           echo "tag=${version}" >> "${GITHUB_OUTPUT}"
           echo "build_time=${build_time}" >> "${GITHUB_OUTPUT}"
 
