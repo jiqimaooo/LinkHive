@@ -22,12 +22,14 @@ jobs:
         id: version
         run: |
           build_time=$(TZ=Asia/Shanghai date +'%Y.%m.%d')
+          build_date=$(TZ=Asia/Shanghai date +'%Y%m%d')
           seq=${{ github.run_number }}
           major=$(( (seq + 9) / 10 ))
           minor=$(( (seq - 1) % 10 ))
-          version="v${build_time}-${major}.${minor}"
+          version="V${major}.${minor} (${build_date})"
           echo "tag=${version}" >> "${GITHUB_OUTPUT}"
           echo "build_time=${build_time}" >> "${GITHUB_OUTPUT}"
+          echo "build_date=${build_date}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -93,15 +95,15 @@ jobs:
       - name: Build deploy zip
         run: |
           python scripts/build_deploy_package.py \
-            --output dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip \
+            --output dist/LinkHive-deploy-${{ steps.version.outputs.build_date }}.zip \
             --copy-to dist/LinkHive-deploy.zip
 
       - name: Upload deploy artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LinkHive-deploy-${{ steps.version.outputs.tag }}
+          name: LinkHive-deploy-${{ steps.version.outputs.build_date }}
           path: |
-            dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip
+            dist/LinkHive-deploy-${{ steps.version.outputs.build_date }}.zip
             dist/LinkHive-deploy.zip
             dist/lpac-assets.json
             dist/lpac-linux-*.zip
@@ -135,7 +137,7 @@ jobs:
             - `lpac-assets.json`
             - `lpac-linux-*.zip`（如有）
           files: |
-            dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip
+            dist/LinkHive-deploy-${{ steps.version.outputs.build_date }}.zip
             dist/LinkHive-deploy.zip
             dist/lpac-assets.json
             dist/lpac-linux-*.zip
