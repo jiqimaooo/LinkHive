@@ -138,7 +138,7 @@ export default function AboutPage() {
           >
             <img src="https://github.com/jiqimaooo.png" alt="作者头像" className="size-10 rounded-full" />
             <div>
-              <div className="text-sm font-medium">王野</div>
+              <div className="text-sm font-medium">王野1</div>
               <div className="text-xs text-muted-foreground">@jiqimaooo</div>
             </div>
             <ExternalLinkIcon className="size-3 text-muted-foreground ml-auto" />
