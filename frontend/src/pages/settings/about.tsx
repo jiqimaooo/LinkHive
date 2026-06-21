@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { toast } from "sonner"
 
 export default function AboutPage() {
-  const [currentVersion, setCurrentVersion] = useState("v1.0.0")
+  const [currentVersion, setCurrentVersion] = useState("V1.0 (20250621)")
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
