@@ -2344,7 +2344,8 @@ def perform_update(ctx: ActionContext, _payload: dict[str, Any]) -> None:
     ctx.log(f"开始下载 {tag}（{total_size / 1024 / 1024:.1f} MB）...")
 
     tmp_dir = tempfile.mkdtemp(prefix="linkhive_update_")
-    archive_path = os.path.join(tmp_dir, "release.tar.gz")
+    ext = ".zip" if download_url.endswith(".zip") else ".tar.gz"
+    archive_path = os.path.join(tmp_dir, f"release{ext}")
     try:
         req2 = urllib.request.Request(download_url, headers={"User-Agent": "LinkHive"})
         with urllib.request.urlopen(req2, timeout=300) as dl:
@@ -2362,8 +2363,13 @@ def perform_update(ctx: ActionContext, _payload: dict[str, Any]) -> None:
                             ctx.log(f"下载进度：{pct}%")
         ctx.log("下载完成，正在解压...")
 
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(tmp_dir)
+        if archive_path.endswith(".zip") or download_url.endswith(".zip"):
+            import zipfile
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(tmp_dir)
+        else:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(tmp_dir)
         ctx.log("解压完成，正在替换文件...")
 
         static_dir = Path(os.environ.get("FOURG_WIFI_ADMIN_STATIC_DIR", str(SCRIPT_DIR / "frontend_dist")))
