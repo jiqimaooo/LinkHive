@@ -5,12 +5,19 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { toast } from "sonner"
 
-const VERSION = `v${__APP_VERSION__}`
-
 export default function AboutPage() {
+  const [currentVersion, setCurrentVersion] = useState("v1.0.0")
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
+
+  // 从后端获取当前版本号
+  useState(() => {
+    fetch("/api/auth/status")
+      .then((r) => r.json())
+      .then((d) => { if (d.version) setCurrentVersion(d.version) })
+      .catch(() => {})
+  })
 
   const handleCheckUpdate = async () => {
     try {
@@ -18,12 +25,12 @@ export default function AboutPage() {
       if (!res.ok) throw new Error("检查失败")
       const data = await res.json() as { tag_name: string; assets: Array<{ browser_download_url: string; size: number }> }
       const latest = data.tag_name
-      if (latest !== VERSION) {
+      if (latest !== currentVersion) {
         setLatestVersion(latest)
         toast.info(`新版本可用：${latest}`)
       } else {
         setLatestVersion(null)
-        toast.success(`已是最新版本（${VERSION}）`)
+        toast.success(`已是最新版本（${currentVersion}）`)
       }
     } catch {
       toast.error("检查更新失败，请稍后重试")
@@ -66,8 +73,8 @@ export default function AboutPage() {
         if (snapshot.state === "done" || snapshot.state === "error") {
           if (snapshot.state === "error") throw new Error(snapshot.error || "更新失败")
           setProgress(100)
-          toast.success("更新完成，即将刷新页面")
-          setTimeout(() => window.location.reload(), 1500)
+          toast.success("更新完成，服务重启中，即将自动刷新...")
+          setTimeout(() => window.location.reload(), 3000)
           return
         }
       }
@@ -90,7 +97,7 @@ export default function AboutPage() {
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between rounded-xl border p-3">
             <span className="text-sm text-muted-foreground">当前版本</span>
-            <span className="text-sm font-mono font-medium">{VERSION}</span>
+            <span className="text-sm font-mono font-medium">{currentVersion}</span>
           </div>
 
           {updating ? (

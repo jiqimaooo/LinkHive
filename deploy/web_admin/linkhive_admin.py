@@ -336,6 +336,13 @@ def auth_enabled() -> bool:
     return bool(str(config.get("LINKHIVE_PASSWORD_HASH", "")).strip())
 
 
+def app_version() -> str:
+    flag = Path("/tmp/linkhive_update_ready")
+    if flag.exists():
+        return flag.read_text().strip()
+    return "v1.0.0"
+
+
 def auth_username() -> str:
     return auth_config().get("LINKHIVE_ADMIN_USER", "admin").strip() or "admin"
 
@@ -2235,6 +2242,11 @@ def run_action_worker(action_id: str, action: str, payload: dict[str, Any]) -> N
         final_status = get_status()
         set_action_state(action_id, "done", message=ctx.summary(), error="", status=final_status)
         ctx.log("执行完成")
+        # 更新完成后重启服务
+        if action == "update":
+            time.sleep(1)
+            python = sys.executable
+            os.execv(python, [python] + sys.argv)
     except Exception as exc:
         error_message = str(exc)
         set_action_state(action_id, "error", message=ctx.summary(), error=error_message)
@@ -2394,11 +2406,10 @@ def perform_update(ctx: ActionContext, _payload: dict[str, Any]) -> None:
                     shutil.copy2(src_file, dest)
                     ctx.log(f"已更新：{f}")
 
-        ctx.log("更新完成，服务即将重启...")
-        ctx.sleep(2, "等待重启")
-        # 重启自身
-        python = sys.executable
-        os.execv(python, [python] + sys.argv)
+        ctx.log("更新完成，2 秒后自动重启服务...")
+        ctx.sleep(1, "")
+        # 写入重启标记，让外部重启服务
+        Path("/tmp/linkhive_update_ready").write_text(tag)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2622,6 +2633,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "auth_enabled": auth_enabled(),
             "authenticated": self._authenticated(),
             "username": auth_username(),
+            "version": app_version(),
         }
 
     def do_GET(self) -> None:

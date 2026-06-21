@@ -2,13 +2,9 @@ import path from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import pkg from './package.json'
 
 // https://vite.dev/config/
 export default defineConfig({
-  define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
-  },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -17,7 +13,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
+      '/api': 'http://192.168.100.112:8080',
     },
   },
 })
