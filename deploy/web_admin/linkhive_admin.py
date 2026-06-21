@@ -764,7 +764,7 @@ def parse_keepalive_task(raw_task: dict[str, Any]) -> dict[str, Any]:
         cron_expression = legacy_keepalive_cron(raw_task.get("time", ""), weekdays)
     if not label:
         raise ValueError("保活任务名称不能为空")
-    if not profile_iccid:
+    if not profile_iccid and esim_management_enabled():
         raise ValueError(f"保活任务 {label} 缺少 Profile")
     if not target_number:
         raise ValueError(f"保活任务 {label} 缺少目标手机号")
@@ -2220,6 +2220,9 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
     if action == KEEPALIVE_ACTION_NAME:
         run_keepalive_task(ctx, payload)
         return
+    if action == "update":
+        perform_update(ctx, payload)
+        return
     raise ValueError("不支持的操作")
 
 
@@ -2316,6 +2319,82 @@ def enqueue_keepalive_action(task: dict[str, Any], *, trigger: str, scheduled_fo
         },
         metadata=metadata,
     )
+
+
+def perform_update(ctx: ActionContext, _payload: dict[str, Any]) -> None:
+    ctx.log("正在从 GitHub 获取最新版本信息...")
+    import urllib.request
+    import tempfile
+    import shutil
+    import tarfile
+
+    api_url = "https://api.github.com/repos/jiqimaooo/LinkHive/releases/latest"
+    req = urllib.request.Request(api_url, headers={"User-Agent": "LinkHive"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        release = json.loads(resp.read().decode())
+    tag = release.get("tag_name", "")
+    ctx.log(f"最新版本：{tag}")
+    assets = release.get("assets", [])
+    if not assets:
+        raise RuntimeError("未找到发布资源")
+    download_url = assets[0].get("browser_download_url", "")
+    if not download_url:
+        raise RuntimeError("未找到下载链接")
+    total_size = assets[0].get("size", 0)
+    ctx.log(f"开始下载 {tag}（{total_size / 1024 / 1024:.1f} MB）...")
+
+    tmp_dir = tempfile.mkdtemp(prefix="linkhive_update_")
+    archive_path = os.path.join(tmp_dir, "release.tar.gz")
+    try:
+        req2 = urllib.request.Request(download_url, headers={"User-Agent": "LinkHive"})
+        with urllib.request.urlopen(req2, timeout=300) as dl:
+            downloaded = 0
+            with open(archive_path, "wb") as f:
+                while True:
+                    chunk = dl.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size:
+                        pct = int(downloaded / total_size * 100)
+                        if pct % 10 == 0:
+                            ctx.log(f"下载进度：{pct}%")
+        ctx.log("下载完成，正在解压...")
+
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(tmp_dir)
+        ctx.log("解压完成，正在替换文件...")
+
+        static_dir = Path(os.environ.get("FOURG_WIFI_ADMIN_STATIC_DIR", str(SCRIPT_DIR / "frontend_dist")))
+        # 查找解压后的 dist 目录
+        for root, dirs, _files in os.walk(tmp_dir):
+            if "dist" in dirs or "frontend_dist" in dirs:
+                src = Path(root) / ("frontend_dist" if "frontend_dist" in dirs else "dist")
+                if src.exists():
+                    if static_dir.exists():
+                        shutil.rmtree(static_dir)
+                    shutil.copytree(src, static_dir)
+                    ctx.log(f"静态文件已更新到 {static_dir}")
+                    break
+            # 也检查是否有更新的 Python 文件
+            for f in _files:
+                if f.endswith(".py"):
+                    src_file = Path(root) / f
+                    rel = src_file.relative_to(tmp_dir)
+                    dest = SCRIPT_DIR / f
+                    if "deploy" in str(src_file) or "web_admin" in str(src_file):
+                        continue
+                    shutil.copy2(src_file, dest)
+                    ctx.log(f"已更新：{f}")
+
+        ctx.log("更新完成，服务即将重启...")
+        ctx.sleep(2, "等待重启")
+        # 重启自身
+        python = sys.executable
+        os.execv(python, [python] + sys.argv)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def keepalive_scheduler() -> None:

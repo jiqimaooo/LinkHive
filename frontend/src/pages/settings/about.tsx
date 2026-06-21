@@ -1,24 +1,23 @@
-import { useState, useRef } from "react"
+import { useState } from "react"
 import { ExternalLinkIcon, RefreshCwIcon, DownloadIcon } from "lucide-react"
 import { PageHeader } from "@/components/shared/page-header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { toast } from "sonner"
 
-const VERSION = "v1.0.0"
+const VERSION = `v${__APP_VERSION__}`
 
 export default function AboutPage() {
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
-  const progressRef = useRef(0)
 
   const handleCheckUpdate = async () => {
     try {
       const res = await fetch("https://api.github.com/repos/jiqimaooo/LinkHive/releases/latest")
       if (!res.ok) throw new Error("检查失败")
-      const data = await res.json()
-      const latest = (data as { tag_name: string }).tag_name
+      const data = await res.json() as { tag_name: string; assets: Array<{ browser_download_url: string; size: number }> }
+      const latest = data.tag_name
       if (latest !== VERSION) {
         setLatestVersion(latest)
         toast.info(`新版本可用：${latest}`)
@@ -33,22 +32,52 @@ export default function AboutPage() {
 
   const handleUpdate = async () => {
     setUpdating(true)
-    progressRef.current = 0
     setProgress(0)
 
-    // 模拟下载进度 0→100%，约3秒
-    const interval = setInterval(() => {
-      progressRef.current += Math.random() * 12 + 2
-      if (progressRef.current >= 100) {
-        progressRef.current = 100
-        setProgress(100)
-        clearInterval(interval)
-        toast.success("更新完成，即将刷新页面")
-        setTimeout(() => window.location.reload(), 800)
-      } else {
-        setProgress(Math.round(progressRef.current))
+    try {
+      // 启动后端更新任务
+      const startRes = await fetch("/api/action/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "update", payload: {} }),
+      })
+      const { id } = await startRes.json()
+      if (!id) throw new Error("启动更新失败")
+
+      // 轮询进度
+      let cursor = 0
+      while (true) {
+        await new Promise((r) => setTimeout(r, 1000))
+        const pollRes = await fetch(`/api/action/${id}?cursor=${cursor}`)
+        const snapshot = await pollRes.json() as {
+          state: string; cursor: number; events: Array<{ level: string; message: string }>
+          error?: string; status?: unknown
+        }
+        cursor = snapshot.cursor
+        for (const evt of snapshot.events) {
+          if (evt.level === "error") throw new Error(evt.message)
+          // 解析下载进度
+          const match = evt.message.match(/下载进度：(\d+)%/)
+          if (match) setProgress(parseInt(match[1], 10))
+          // 检查更新步骤
+          if (evt.message.includes("下载完成")) setProgress(80)
+          if (evt.message.includes("解压完成")) setProgress(90)
+          if (evt.message.includes("更新完成")) setProgress(100)
+        }
+        if (snapshot.state === "done") {
+          setProgress(100)
+          toast.success("更新完成，即将刷新页面")
+          setTimeout(() => window.location.reload(), 1500)
+          return
+        }
+        if (snapshot.state === "error") {
+          throw new Error(snapshot.error || "更新失败")
+        }
       }
-    }, 120)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "更新失败")
+      setUpdating(false)
+    }
   }
 
   return (
@@ -70,7 +99,7 @@ export default function AboutPage() {
           {updating ? (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>正在下载更新...</span>
+                <span>正在安装 {latestVersion}...</span>
                 <span>{progress}%</span>
               </div>
               <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
