@@ -50,15 +50,9 @@ eSIM 功能额外需要：
 
 普通实体 SIM 场景不要求 eUICC。
 
-## 部署方式选择
+## 部署
 
-推荐顺序：
-
-- Docker 部署：适合先预览 UI、快速验证服务入口，或已经习惯用容器管理服务的环境。
-- 一键脚本部署：适合 Debian/Ubuntu 工控机、软路由或网关设备，脚本会安装系统依赖、复制服务文件并注册 systemd。
-- 手动 systemd 部署：适合需要审计每一步、调整安装路径或离线环境的场景。
-
-如果要直接管理真实 4G 模组，systemd 方式通常比 Docker 更少权限问题；Docker 方式需要额外映射设备和宿主机网络能力。
+Docker 适合先预览 UI 或快速验证；一键脚本适合 Debian/Ubuntu 工控机、软路由或网关设备，会安装系统依赖并注册 systemd 服务。如果要直接管理真实 4G 模组，systemd 方式通常比 Docker 更少权限问题。
 
 ## Docker 部署（推荐优先尝试）
 
@@ -92,45 +86,19 @@ docker compose down
 
 ## 一键脚本部署
 
-发布到 GitHub Release 后，推荐使用一键安装脚本：
+直接运行一键安装脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-name>/LinkHive/main/scripts/install_latest.sh | sudo REPO_OWNER=<your-name> REPO_NAME=LinkHive sh
+curl -fsSL https://raw.githubusercontent.com/jiqimaooo/LinkHive/main/scripts/install_latest.sh | sudo sh
 ```
 
 默认初始模式为 eSIM。如果要以普通 SIM 模式启动：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-name>/LinkHive/main/scripts/install_latest.sh | sudo REPO_OWNER=<your-name> REPO_NAME=LinkHive sh -s -- --sim-type physical
+curl -fsSL https://raw.githubusercontent.com/jiqimaooo/LinkHive/main/scripts/install_latest.sh | sudo sh -s -- --sim-type physical
 ```
 
-一键脚本会从最新 Release 下载 `LinkHive-deploy.zip`，然后执行包内的 `deploy/install.sh`。
-
-## 手动 systemd 部署
-
-从源码部署时，源码仓库默认不提交前端构建产物，需要先构建前端并同步到部署目录：
-
-```bash
-git clone https://github.com/<your-name>/LinkHive.git
-cd LinkHive
-
-cd frontend
-corepack enable
-pnpm install
-pnpm build
-cd ..
-
-rsync -a --delete frontend/dist/ deploy/web_admin/frontend_dist/
-sudo sh ./deploy/install.sh
-```
-
-普通 SIM 模式：
-
-```bash
-sudo sh ./deploy/install.sh --sim-type physical
-```
-
-访问控制台：
+安装完成后访问：
 
 ```text
 http://设备IP:8080
@@ -147,12 +115,11 @@ http://设备IP:8080
 
 ## lpac 预编译资产
 
-源码仓库默认不提交 `lpac-linux-*.zip` 这类预编译二进制压缩包。eSIM 部署时，安装脚本会按以下顺序查找：
+源码仓库默认不提交 `lpac-linux-*.zip` 这类预编译二进制压缩包。eSIM 部署时，安装脚本会依次查找匹配当前设备架构、系统版本和 glibc 的 lpac 资产：
 
-- 本地部署包中的 `deploy/esim/lpac-linux-*.zip`。
-- 最新 Release 附件中的 `lpac-assets.json`。
-- 固定 `lpac-assets` Release 附件中的 `lpac-assets.json`。
-- 与当前架构、系统版本、glibc 匹配的 `lpac-linux-*.zip`。
+- 本地 `deploy/esim/lpac-linux-*.zip`。
+- 最新 Release 附件中的 `lpac-assets.json` 及对应 zip。
+- 固定 `lpac-assets` Release 附件中的 `lpac-assets.json` 及对应 zip。
 
 推荐把 lpac 二进制作为 GitHub Release 附件发布，不放进源码仓库。命名示例：
 
@@ -324,6 +291,7 @@ python3 scripts/build_deploy_package.py \
 deploy/                     设备侧部署文件
 deploy/web_admin/           Python Web API；Release 包中会包含前端静态资源
 deploy/sms_forwarder/       短信转发服务
+deploy/shared/              前后端共享的工具模块
 deploy/esim/                lpac 包装脚本；预编译资产通过 Release 附件分发
 frontend/                   React + Vite 前端
 scripts/                    构建、发布与远端验证脚本

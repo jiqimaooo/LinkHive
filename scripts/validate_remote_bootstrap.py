@@ -10,7 +10,7 @@ import paramiko
 
 DEFAULT_SCRIPT_URL = (
     "https://raw.githubusercontent.com/"
-    "cyDione/LinkHive/main/scripts/install_latest.sh"
+    "jiqimaooo/LinkHive/main/scripts/install_latest.sh"
 )
 
 

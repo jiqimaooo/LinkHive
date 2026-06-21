@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO_OWNER="${REPO_OWNER:-}"
+REPO_OWNER="${REPO_OWNER:-jiqimaooo}"
 REPO_NAME="${REPO_NAME:-LinkHive}"
 ASSET_NAME="${ASSET_NAME:-LinkHive-deploy.zip}"
 

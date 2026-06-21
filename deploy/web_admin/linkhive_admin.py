@@ -1515,7 +1515,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         "capabilities": {
             "sim_type": current_sim_type,
             "esim_management_enabled": esim_enabled,
-            "lpac_installed": os.path.exists("/opt/lpac/bin/lpac"),
+            "lpac_installed": os.path.exists("/opt/lpac/lpac"),
         },
         "modem_available": not modem_error,
         "status_message": status_message,
@@ -1840,7 +1840,7 @@ def update_sim_mode(ctx: ActionContext, payload: dict[str, Any]) -> None:
     set_sim_type(next_sim_type)
     if next_sim_type == "esim":
         ctx.log("已切换到 eSIM 模式，普通 SIM 模式自动关闭")
-        if not os.path.exists("/opt/lpac/bin/lpac"):
+        if not os.path.exists("/opt/lpac/lpac"):
             ctx.log("未检测到 /opt/lpac/bin/lpac，eSIM Profile 读取与切卡可能不可用", "warning")
     else:
         ctx.log("已切换到普通 SIM 模式，eSIM 管理自动关闭")
