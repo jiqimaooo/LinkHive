@@ -2,18 +2,21 @@ export function Logo({ className }: { className?: string }) {
   return (
     <svg
       className={className}
-      width="128"
-      height="128"
-      viewBox="0 0 128 128"
+      width="80"
+      height="80"
+      viewBox="0 0 80 80"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <rect x="10" y="10" width="108" height="108" rx="24" fill="#0F172A" />
-      <path d="M38 34H52V80H78V94H38V34Z" fill="#2563EB" />
-      <path d="M82 34H96V94H82V70H64V94H50V56H64V58H82V34Z" fill="#FFFFFF" />
-      <rect x="95" y="42" width="5" height="15" rx="2.5" fill="#FFFFFF" />
-      <rect x="103" y="35" width="5" height="22" rx="2.5" fill="#FFFFFF" />
-      <rect x="111" y="28" width="5" height="29" rx="2.5" fill="#FFFFFF" />
+      <rect width="80" height="80" rx="20" fill="#0F172A" />
+      <rect x="12" y="17" width="6" height="36" rx="1" fill="#2563EB" />
+      <rect x="16" y="47" width="15" height="6" fill="#2563EB" />
+      <rect x="31" y="31" width="6" height="30" rx="1" fill="#2563EB" />
+      <rect x="37" y="40" width="18" height="6" fill="#2563EB" />
+      <rect x="55" y="31" width="6" height="30" rx="1" fill="#2563EB" />
+      <rect x="49" y="17" width="4" height="10" rx="2" fill="#D9D9D9" />
+      <rect x="64" y="11" width="4" height="16" rx="2" fill="#D9D9D9" />
+      <path d="M56 16C56 14.8954 56.8954 14 58 14C59.1046 14 60 14.8954 60 16V25C60 26.1046 59.1046 27 58 27C56.8954 27 56 26.1046 56 25V16Z" fill="#D9D9D9" />
     </svg>
   )
 }
