@@ -53,25 +53,22 @@ export default function AboutPage() {
           state: string; cursor: number; events: Array<{ level: string; message: string }>
           error?: string; status?: unknown
         }
-        cursor = snapshot.cursor
-        for (const evt of snapshot.events) {
+        cursor = snapshot.cursor || 0
+        const events = snapshot.events || []
+        for (const evt of events) {
           if (evt.level === "error") throw new Error(evt.message)
-          // 解析下载进度
           const match = evt.message.match(/下载进度：(\d+)%/)
           if (match) setProgress(parseInt(match[1], 10))
-          // 检查更新步骤
           if (evt.message.includes("下载完成")) setProgress(80)
           if (evt.message.includes("解压完成")) setProgress(90)
           if (evt.message.includes("更新完成")) setProgress(100)
         }
-        if (snapshot.state === "done") {
+        if (snapshot.state === "done" || snapshot.state === "error") {
+          if (snapshot.state === "error") throw new Error(snapshot.error || "更新失败")
           setProgress(100)
           toast.success("更新完成，即将刷新页面")
           setTimeout(() => window.location.reload(), 1500)
           return
-        }
-        if (snapshot.state === "error") {
-          throw new Error(snapshot.error || "更新失败")
         }
       }
     } catch (error) {
