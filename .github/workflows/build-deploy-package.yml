@@ -1,0 +1,125 @@
+name: Build Deploy Package
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate version
+        id: version
+        run: |
+          build_time=$(TZ=Asia/Shanghai date +'%Y.%m.%d-%H%M')
+          short_sha="${GITHUB_SHA::7}"
+          version="v${build_time}-${short_sha}"
+          echo "tag=${version}" >> "${GITHUB_OUTPUT}"
+          echo "build_time=${build_time}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Validate Python scripts
+        run: |
+          python -m py_compile deploy/shared/notification_utils.py
+          python -m py_compile deploy/web_admin/linkhive_admin.py
+          python -m py_compile deploy/sms_forwarder/sms_forwarder.py
+
+      - name: Sync built frontend into deploy assets
+        run: |
+          rm -rf deploy/web_admin/frontend_dist
+          mkdir -p deploy/web_admin/frontend_dist
+          cp -a frontend/dist/. deploy/web_admin/frontend_dist/
+
+      - name: Build deploy zip
+        run: |
+          python scripts/build_deploy_package.py \
+            --output dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip \
+            --copy-to dist/LinkHive-deploy.zip
+
+      - name: Build lpac asset manifest
+        run: |
+          python scripts/build_lpac_manifest.py \
+            --assets-dir deploy/esim \
+            --output dist/lpac-assets.json
+
+      - name: Collect lpac bundles
+        run: |
+          find deploy/esim -maxdepth 1 -type f -name 'lpac-linux-*.zip' -exec cp {} dist/ \;
+
+      - name: Upload deploy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinkHive-deploy-${{ steps.version.outputs.tag }}
+          path: |
+            dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip
+            dist/LinkHive-deploy.zip
+            dist/lpac-assets.json
+            dist/lpac-linux-*.zip
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 自动构建 ${{ steps.version.outputs.tag }}
+          body: |
+            ## 更新内容
+
+            - 自动构建时间：${{ steps.version.outputs.build_time }}（Asia/Shanghai）
+            - 提交版本：`${{ github.sha }}`
+            - 包含最新前端构建、Web 管理服务、短信转发服务
+            - 包含 Debian 一键安装脚本与环境检查
+            - 安装脚本会根据架构、系统版本、glibc 自动匹配并下载对应的 lpac 资产
+            - 如仓库中存在多个 `lpac-linux-*.zip`，本次 release 会一并发布并生成 `lpac-assets.json`
+
+            ## 安装命令
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/cyDione/LinkHive/main/scripts/install_latest.sh | sudo sh
+            ```
+
+            ## 资产说明
+
+            - `LinkHive-deploy.zip`
+            - `lpac-assets.json`
+            - `lpac-linux-*.zip`（如有）
+          files: |
+            dist/LinkHive-deploy-${{ steps.version.outputs.tag }}.zip
+            dist/LinkHive-deploy.zip
+            dist/lpac-assets.json
+            dist/lpac-linux-*.zip
+          fail_on_unmatched_files: false

@@ -1,0 +1,15 @@
+# Copy to /etc/sms-forwarder.conf and configure Apprise targets below.
+MODEM_ID=any
+
+# Apprise target list, JSON array format.
+# Each item supports:
+# - label: display name shown in the web UI
+# - url: Apprise URL
+# - enabled: true / false
+#
+# Example:
+# NOTIFICATION_TARGETS_JSON=[{"id":"bark-primary","label":"Bark","url":"barks://bark.example.com/device_key?group=sms&level=active","enabled":true},{"id":"tg-backup","label":"Telegram","url":"tgram://bot_token/chat_id","enabled":false}]
+NOTIFICATION_TARGETS_JSON=[]
+
+# Forward only these ModemManager SMS states, comma-separated.
+FORWARD_SMS_STATES=received

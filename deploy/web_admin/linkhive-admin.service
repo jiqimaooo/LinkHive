@@ -1,0 +1,15 @@
+[Unit]
+Description=LinkHive Web Admin
+After=network-online.target ModemManager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/linkhive.conf
+ExecStart=/opt/linkhive/venv/bin/python /usr/local/bin/linkhive_admin.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
