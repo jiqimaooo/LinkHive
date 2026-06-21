@@ -15,8 +15,7 @@ import SmsForwardingPage from "@/pages/sms/forwarding"
 import ProfilesPage from "@/pages/sim-cards/profiles"
 import KeepalivePage from "@/pages/sim-cards/keepalive"
 import ModeSwitchPage from "@/pages/settings/mode"
-import ApnSettingsPage from "@/pages/settings/apn"
-import RadioNetworkPage from "@/pages/settings/network"
+import SecurityPage from "@/pages/settings/security"
 import LogsPage from "@/pages/logs"
 
 function AppLayout() {
@@ -39,8 +38,7 @@ function AppLayout() {
               <Route path="/sim-cards/keepalive" element={<KeepalivePage />} />
               <Route path="/settings" element={<Navigate to="/settings/mode" replace />} />
               <Route path="/settings/mode" element={<ModeSwitchPage />} />
-              <Route path="/settings/apn" element={<ApnSettingsPage />} />
-              <Route path="/settings/network" element={<RadioNetworkPage />} />
+              <Route path="/settings/security" element={<SecurityPage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>

@@ -1,40 +1,24 @@
 import type { ReactNode } from "react"
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 
 export function PageHeader({
-  icon: Icon,
   title,
   description,
   actions,
+  className,
 }: {
-  icon?: React.ComponentType<{ className?: string }>
   title: string
   description?: string
   actions?: ReactNode
+  className?: string
 }) {
   return (
-    <Card className="border-slate-200 bg-white shadow-[0_18px_60px_rgba(15,23,42,0.06)]">
-      <CardHeader className="gap-3">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-          <div className="flex items-start gap-3">
-            {Icon ? (
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                <Icon className="size-5" />
-              </div>
-            ) : null}
-            <div className="flex flex-col gap-1">
-              <CardTitle className="text-xl font-semibold leading-7">{title}</CardTitle>
-              {description ? <CardDescription>{description}</CardDescription> : null}
-            </div>
-          </div>
-          {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
-        </div>
-      </CardHeader>
-    </Card>
+    <div className={cn("flex items-center justify-between gap-4", className)} style={{ minHeight: 56 }}>
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <h1 className="text-xl font-semibold leading-7 text-foreground">{title}</h1>
+        {description ? <p className="text-sm font-normal leading-5 text-muted-foreground">{description}</p> : null}
+      </div>
+      {actions ? <div className="flex items-center gap-3 shrink-0">{actions}</div> : null}
+    </div>
   )
 }

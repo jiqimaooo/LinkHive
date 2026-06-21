@@ -1,16 +1,12 @@
 import {
-  CardSimIcon,
   RadioTowerIcon,
-  SignalIcon,
   SendIcon,
   AlertTriangleIcon,
-  ActivityIcon,
+  RefreshCwIcon,
   WifiIcon,
   Clock3Icon,
 } from "lucide-react"
 import { useAppContext } from "@/hooks/app-context"
-import { PageHeader } from "@/components/shared/page-header"
-import { StatCard } from "@/components/shared/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -43,38 +39,60 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        icon={ActivityIcon}
-        title="仪表盘"
-        description="设备状态、短信活动和系统健康概览。"
-        actions={
-          <>
-            <div className="flex items-center gap-3 rounded-xl border border-border/70 bg-background/80 px-3 py-1.5">
-              <div className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={autoRefresh}
-                  onChange={(e) => setAutoRefresh(e.target.checked)}
-                  className="size-4 rounded"
-                />
-                <span className="text-muted-foreground">自动刷新</span>
-              </div>
-              <span className="text-xs text-muted-foreground">
-                {status?.timestamp ? `最后刷新 ${status.timestamp}` : "等待首次刷新"}
+      {/* Dashboard Header - 轻量无卡片风格 */}
+      <div className="flex items-center justify-between gap-4" style={{ minHeight: 56 }}>
+        <div className="flex flex-col gap-0.5">
+          <h1 className="text-xl font-semibold leading-7 text-foreground">仪表盘</h1>
+          <p className="text-sm font-normal leading-5 text-muted-foreground">设备状态、短信活动和系统健康概览。</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="size-4 rounded accent-blue-600"
+            />
+            自动刷新
+          </label>
+          <button
+            type="button"
+            onClick={() => { void refreshStatus(false, true) }}
+            disabled={isRefreshing}
+            className="inline-flex items-center justify-center size-8 rounded-lg text-muted-foreground hover:bg-slate-100 hover:text-foreground transition-colors disabled:opacity-50"
+            aria-label="刷新"
+          >
+            <RefreshCwIcon className={isRefreshing ? "animate-spin size-4" : "size-4"} />
+          </button>
+          {(() => {
+            const hasErrors = (status?.errors?.length ?? 0) > 0
+            const hasMessage = Boolean(status?.status_message)
+            const modemOk = status?.modem_available !== false
+            const isGreen = !hasErrors && !hasMessage && modemOk
+            const isRed = !modemOk
+            const isYellow = !isGreen && !isRed
+
+            let dotColor = "bg-emerald-500"
+            let tooltip = "一切正常"
+            if (isRed) {
+              dotColor = "bg-rose-500"
+              tooltip = [status?.status_message, ...(status?.errors ?? [])].filter(Boolean).join(" · ") || "基带离线"
+            } else if (isYellow) {
+              dotColor = "bg-amber-500"
+              tooltip = [status?.status_message, ...(status?.errors ?? [])].filter(Boolean).join(" · ") || "设备有告警信息"
+            }
+
+            return (
+              <span className="group relative flex items-center">
+                <span className={`inline-block size-2.5 rounded-full ${dotColor} cursor-default ${isGreen ? "animate-breathing" : ""}`} />
+                <span className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover:block whitespace-nowrap text-xs font-medium text-white bg-slate-800 px-2.5 py-1.5 rounded-lg shadow-lg z-50">
+                  {tooltip}
+                </span>
               </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => { void refreshStatus(false, true) }}
-              disabled={isRefreshing}
-              className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 h-8 text-sm hover:bg-muted"
-            >
-              <ActivityIcon className={isRefreshing ? "animate-spin" : ""} />
-              {isRefreshing ? "刷新中..." : "刷新状态"}
-            </button>
-          </>
-        }
-      />
+            )
+          })()}
+        </div>
+      </div>
 
       {status?.status_message || (status?.errors?.length ?? 0) > 0 ? (
         <div className={status?.modem_available ? "rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800" : "rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-800"}>
@@ -88,11 +106,40 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={CardSimIcon} label={esimEnabled ? "当前 Profile" : "当前 SIM"} value={activeProfileLabel} hint={`手机号：${status?.modem.number || "--"}`} />
-        <StatCard icon={RadioTowerIcon} label="运营商" value={status?.modem.operator_name || "--"} hint={`${status?.modem.operator_code || "--"} · ${formatRegistrationState(status?.modem.registration || "--")}`} />
-        <StatCard icon={SignalIcon} label="信号与制式" value={`${status?.modem.signal || "--"}%`} hint={formatAccessTech(status?.modem.access_tech || "--")} badgeVariant={signalVariant(status?.modem.signal || "--")} />
-        <StatCard icon={SendIcon} label="短信转发" value={status?.services.sms_forwarder || "--"} hint={configuredCount ? `已配置 ${configuredCount} 个渠道` : "尚未配置通知渠道"} badgeVariant={serviceVariant(status?.services.sms_forwarder || "")} />
+      {/* 设备状态概览 */}
+      <div className="rounded-xl border border-[#e5e7eb] bg-white p-5">
+        <h3 className="text-xs font-medium text-[#64748b] mb-4">设备状态概览</h3>
+        <div className="grid grid-cols-4 divide-x divide-[#f1f5f9]">
+          {/* SIM 信息 */}
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">{esimEnabled ? "当前 Profile" : "当前 SIM"}</span>
+            <span className="text-base font-semibold text-[#0f172a]">{activeProfileLabel}</span>
+            <span className="text-sm text-[#64748b]">手机号：{status?.modem.number || "--"}</span>
+          </div>
+          {/* 网络信息 */}
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">运营商</span>
+            <span className="text-base font-semibold text-[#0f172a]">{status?.modem.operator_name || "--"}</span>
+            <span className="text-sm text-[#64748b]">{status?.modem.operator_code || "--"} · {formatRegistrationState(status?.modem.registration || "--")}</span>
+          </div>
+          {/* 信号状态 */}
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">信号状态</span>
+            <span className="text-base font-semibold text-[#0f172a]">{formatAccessTech(status?.modem.access_tech || "--")}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[#64748b]">信号强度</span>
+              <Badge variant={signalVariant(status?.modem.signal || "--")} className="h-5 rounded-full text-[0.688rem] font-medium">{status?.modem.signal || "--"}%</Badge>
+            </div>
+          </div>
+          {/* 短信转发 */}
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">短信转发</span>
+            <div className="flex items-center gap-2">
+              <Badge variant={serviceVariant(status?.services.sms_forwarder || "")} className="h-5 rounded-full text-[0.688rem] font-medium">{status?.services.sms_forwarder || "--"}</Badge>
+            </div>
+            <span className="text-sm text-[#64748b]">{configuredCount ? `已配置 ${configuredCount} 个渠道` : "尚未配置通知渠道"}</span>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

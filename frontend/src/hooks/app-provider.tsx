@@ -40,7 +40,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [expandedProfileIccid, setExpandedProfileIccid] = useState<string | null>(null)
   const [apnForm, setApnForm] = useState<ApnFormState>({ apn: "", username: "", password: "", ip_type: "ipv4v6" })
   const [networkCode, setNetworkCode] = useState("")
-  const [radioMode, setRadioMode] = useState("3g4g_prefer4g")
+  const [radioMode, setRadioMode] = useState("network_disabled")
   const [shellPanelOpen, setShellPanelOpen] = useState(false)
   const [switchingMode, setSwitchingMode] = useState<"physical" | "esim" | null>(null)
 
@@ -104,19 +104,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [syncFormsFromStatus])
 
-  const login = useCallback(async () => {
+  const [totpRequired, setTotpRequired] = useState(false)
+
+  const login = useCallback(async (totpCode?: string) => {
     setIsLoggingIn(true)
     try {
-      const snapshot = await requestJson<AuthStatus & { ok?: true }>("/api/auth/login", {
+      const body: Record<string, string> = { ...loginForm }
+      if (totpCode) body.totp_code = totpCode
+      const snapshot = await requestJson<AuthStatus & { ok?: true; totp_required?: boolean }>("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify(loginForm),
+        body: JSON.stringify(body),
       })
+      if (snapshot.totp_required) {
+        setTotpRequired(true)
+        setIsLoggingIn(false)
+        return
+      }
       setAuthStatus({
-        auth_enabled: snapshot.auth_enabled,
-        authenticated: snapshot.authenticated,
-        username: snapshot.username,
+        auth_enabled: (snapshot as AuthStatus).auth_enabled,
+        authenticated: (snapshot as AuthStatus).authenticated,
+        username: (snapshot as AuthStatus).username,
       })
       setLoginForm((current) => ({ ...current, password: "" }))
+      setTotpRequired(false)
       await refreshStatus(false, true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "登录失败")
@@ -340,7 +350,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const payloadTasks = keepaliveTasks.map((task, index) => {
         if (!task.label.trim()) throw new Error(`第 ${index + 1} 条保活任务缺少名称`)
-        if (!task.profile_iccid.trim()) throw new Error(`保活任务 ${task.label} 缺少 Profile`)
+        if (esimEnabled && !task.profile_iccid.trim()) throw new Error(`保活任务 ${task.label} 缺少 Profile`)
         if (!task.target_number.trim()) throw new Error(`保活任务 ${task.label} 缺少目标手机号`)
         if (!task.message.trim()) throw new Error(`保活任务 ${task.label} 缺少短信内容`)
         if (task.cron_expression.trim().split(/\s+/).length !== 5) throw new Error(`保活任务 ${task.label} 的 cron 表达式必须是 5 段`)
@@ -484,7 +494,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const actionBusy = Boolean(activeAction || submittingActionLabel)
 
   const ctx: AppContextType = {
-    authStatus, loginForm, setLoginForm, isLoggingIn, login, logout,
+    authStatus, loginForm, setLoginForm, isLoggingIn, totpRequired, login, logout,
     status, isLoadingStatus, isRefreshing, autoRefresh, setAutoRefresh, refreshStatus,
     logs, activeAction, submittingActionLabel, actionBusy, appendLog, setLogs, runAction,
     switchingMode, switchSimMode,

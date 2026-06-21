@@ -25,7 +25,7 @@ export default function SmsForwardingPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader icon={SendIcon} title="短信转发规则" description="配置短信转发通知渠道，每种渠道只保留一份。" />
+      <PageHeader title="短信转发规则" description="配置短信转发通知渠道，每种渠道只保留一份。" />
 
       <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
         <Card className="border-slate-200 bg-white">

@@ -39,7 +39,7 @@ const STATUS = {
     lpac_installed: true,
   },
   modem_available: true,
-  status_message: "基带在线，网络已注册",
+  status_message: "",
   errors: [],
   modem: {
     number: "+447700123456",
@@ -49,7 +49,7 @@ const STATUS = {
     state: "registered",
     signal: "78",
     access_tech: "lte",
-    current_modes: "allowed: 4g|3g; preferred: 4g",
+    current_modes: "allowed: none; preferred: none",
     apn: "fast.t-mobile.com",
     ip_type: "ipv4v6",
   },
@@ -181,7 +181,16 @@ const server = http.createServer((req, res) => {
         auth_enabled: false,
         authenticated: true,
         username: "admin",
+        totp_enabled: false,
       })
+      break
+
+    case "/api/auth/totp-status":
+      jsonResponse(res, { enabled: false, secret: "" })
+      break
+
+    case "/api/auth/ban-status":
+      jsonResponse(res, { enabled: false, max_attempts: 5, lan_enabled: false, banned_ips: [] })
       break
 
     case "/api/auth/login":
@@ -196,6 +205,58 @@ const server = http.createServer((req, res) => {
     case "/api/auth/logout":
       jsonResponse(res, { ok: true })
       break
+
+    case "/api/auth/totp-setup": {
+      const secret = "MOCKTOTPSECRETBASE32"
+      jsonResponse(res, {
+        ok: true,
+        secret,
+        otpauth_url: `otpauth://totp/LinkHive:admin?secret=${secret}&issuer=LinkHive`,
+      })
+      break
+    }
+
+    case "/api/auth/totp-verify": {
+      jsonResponse(res, { ok: true, message: "二次认证已启用" })
+      break
+    }
+
+    case "/api/auth/totp-disable": {
+      jsonResponse(res, { ok: true, message: "二次认证已禁用" })
+      break
+    }
+
+    case "/api/auth/ban-settings": {
+      jsonResponse(res, { ok: true, message: "防暴力破解配置已更新" })
+      break
+    }
+
+    case "/api/auth/unban-ip": {
+      jsonResponse(res, { ok: true, message: "已解封" })
+      break
+    }
+
+    case "/api/auth/change-password": {
+      let body = ""
+      req.on("data", (chunk) => { body += chunk })
+      req.on("end", () => {
+        try {
+          const { old_password, new_password } = JSON.parse(body)
+          if (!new_password || new_password.length < 4) {
+            jsonResponse(res, { error: "新密码不能少于 4 位" }, 400)
+            return
+          }
+          if (old_password !== "admin" && old_password !== "linkhive") {
+            jsonResponse(res, { error: "旧密码不正确" }, 401)
+            return
+          }
+          jsonResponse(res, { ok: true, message: "密码已修改" })
+        } catch {
+          jsonResponse(res, { error: "请求无效" }, 400)
+        }
+      })
+      return
+    }
 
     case "/api/status": {
       const data = { ...STATUS, timestamp: new Date().toLocaleTimeString("zh-CN", { hour12: false }) }
@@ -235,13 +296,43 @@ const server = http.createServer((req, res) => {
     }
 
     case "/api/action/start": {
-      const id = `action-${Date.now()}`
-      // Simulate async action completion after a short delay
-      setTimeout(() => {
-        // Nothing to do, just acknowledge
-      }, 1000)
-      jsonResponse(res, { ok: true, id })
-      break
+      let body = ""
+      req.on("data", (chunk) => { body += chunk })
+      req.on("end", () => {
+        try {
+          const { action, payload } = JSON.parse(body)
+          const id = `action-${Date.now()}`
+
+          // 模拟网络制式切换的副作用
+          if (action === "apply_radio_mode" && payload?.mode) {
+            if (payload.mode === "network_disabled") {
+              STATUS.modem.current_modes = "allowed: none; preferred: none"
+            } else {
+              STATUS.modem.registration = "home"
+              STATUS.modem.state = "registered"
+              STATUS.modem.signal = "78"
+              STATUS.modem.access_tech = "lte"
+              STATUS.modem.current_modes = "allowed: 4g|3g; preferred: 4g"
+            }
+          }
+
+          if (action === "send_test_sms" && payload?.number && payload?.message) {
+            STATUS.sms.unshift({
+              id: `sms-sent-${Date.now()}`,
+              number: payload.number,
+              text: payload.message,
+              timestamp: new Date().toLocaleString("zh-CN", { hour12: false }).replace(/\//g, "-"),
+              state: "sent",
+              state_label: "已发送",
+            })
+          }
+
+          jsonResponse(res, { ok: true, id })
+        } catch {
+          jsonResponse(res, { ok: true, id: `action-${Date.now()}` })
+        }
+      })
+      return
     }
 
     default: {

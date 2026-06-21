@@ -15,7 +15,11 @@ import sys
 import threading
 import time
 import uuid
-from base64 import b64decode
+import ipaddress
+import json
+import struct
+from base64 import b32encode, b32decode, b64decode
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from glob import glob
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -361,6 +365,125 @@ def verify_password(password: str) -> bool:
 def sign_session(username: str, expires_at: int) -> str:
     message = f"{username}:{expires_at}".encode("utf-8")
     return hmac.new(auth_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def totp_secret() -> str:
+    config = read_env_config(APP_CONFIG_PATH)
+    return config.get("LINKHIVE_TOTP_SECRET", "").strip()
+
+
+def totp_enabled() -> bool:
+    config = read_env_config(APP_CONFIG_PATH)
+    return config.get("LINKHIVE_TOTP_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+
+
+def generate_totp_secret() -> str:
+    return b32encode(secrets.token_bytes(20)).decode("utf-8").rstrip("=")
+
+
+def _totp_hotp(secret_bytes: bytes, counter: int) -> int:
+    hmac_result = hmac.new(secret_bytes, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = hmac_result[-1] & 0x0F
+    binary = ((hmac_result[offset] & 0x7F) << 24
+              | (hmac_result[offset + 1] & 0xFF) << 16
+              | (hmac_result[offset + 2] & 0xFF) << 8
+              | (hmac_result[offset + 3] & 0xFF))
+    return binary % 1_000_000
+
+
+def totp_code(secret: str) -> str:
+    secret_bytes = b32decode(secret + "====")
+    counter = int(time.time() // 30)
+    return str(_totp_hotp(secret_bytes, counter)).zfill(6)
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    return code == totp_code(secret)
+
+
+def totp_otpauth_url(secret: str, label: str = "admin") -> str:
+    encoded = secret.rstrip("=")
+    return f"otpauth://totp/LinkHive:{label}?secret={encoded}&issuer=LinkHive"
+
+
+_FAILED_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
+_FAILED_ATTEMPTS_LOCK = threading.Lock()
+
+
+def _is_lan_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private
+    except ValueError:
+        return False
+
+
+def brute_force_enabled() -> bool:
+    config = read_env_config(APP_CONFIG_PATH)
+    return config.get("LINKHIVE_BRUTE_FORCE_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+
+
+def brute_force_max_attempts() -> int:
+    config = read_env_config(APP_CONFIG_PATH)
+    try:
+        return int(config.get("LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS", "5"))
+    except ValueError:
+        return 5
+
+
+def brute_force_lan_enabled() -> bool:
+    config = read_env_config(APP_CONFIG_PATH)
+    return config.get("LINKHIVE_BRUTE_FORCE_LAN_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+
+
+def banned_ips() -> set[str]:
+    config = read_env_config(APP_CONFIG_PATH)
+    raw = config.get("LINKHIVE_BRUTE_FORCE_BANNED_IPS", "[]")
+    try:
+        return set(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return set()
+
+
+def save_banned_ips(ips: set[str]) -> None:
+    config = read_env_config(APP_CONFIG_PATH)
+    config["LINKHIVE_BRUTE_FORCE_BANNED_IPS"] = json.dumps(sorted(ips))
+    write_env_config(APP_CONFIG_PATH, config)
+
+
+def _cleanup_expired_attempts(now: float, window_seconds: int = 86400) -> None:
+    with _FAILED_ATTEMPTS_LOCK:
+        for ip in list(_FAILED_ATTEMPTS.keys()):
+            _FAILED_ATTEMPTS[ip] = [t for t in _FAILED_ATTEMPTS[ip] if now - t < window_seconds]
+            if not _FAILED_ATTEMPTS[ip]:
+                del _FAILED_ATTEMPTS[ip]
+
+
+def record_failed_attempt(ip: str) -> None:
+    now = time.time()
+    _cleanup_expired_attempts(now)
+    with _FAILED_ATTEMPTS_LOCK:
+        _FAILED_ATTEMPTS[ip].append(now)
+
+
+def is_ip_banned(ip: str) -> bool:
+    if not brute_force_enabled():
+        return False
+    if _is_lan_ip(ip) and not brute_force_lan_enabled():
+        return False
+    if ip in banned_ips():
+        return True
+    now = time.time()
+    _cleanup_expired_attempts(now)
+    max_attempts = brute_force_max_attempts()
+    with _FAILED_ATTEMPTS_LOCK:
+        if len(_FAILED_ATTEMPTS.get(ip, [])) >= max_attempts:
+            new_banned = banned_ips() | {ip}
+            save_banned_ips(new_banned)
+            with _FAILED_ATTEMPTS_LOCK:
+                _FAILED_ATTEMPTS.pop(ip, None)
+            return True
+    return False
 
 
 def make_session_cookie(username: str) -> str:
@@ -1913,9 +2036,6 @@ def apply_network_selection(ctx: ActionContext, payload: dict[str, Any]) -> None
 
 
 def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
-    if not esim_management_enabled():
-        raise RuntimeError("当前为普通 SIM 模式，无法执行保活任务")
-
     task_id = str(payload.get("task_id", "")).strip()
     if not task_id:
         raise ValueError("缺少保活任务 ID")
@@ -1925,18 +2045,26 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
     if not task:
         raise RuntimeError("保活任务不存在或已删除")
 
+    is_esim = esim_management_enabled()
     trigger = str(payload.get("trigger", "manual")).strip() or "manual"
     scheduled_for = str(payload.get("scheduled_for", "")).strip()
 
-    profiles = refresh_profile_cache(force=True)
-    target_profile_name = profile_name_for_iccid(task["profile_iccid"], profiles)
-    active_profile = active_profile_from_list(profiles)
-    original_profile_iccid = str(active_profile.get("iccid", "")).strip()
-    original_profile_name = (
-        str(active_profile.get("display_name") or profile_display_name(active_profile)).strip()
-        if active_profile
-        else ""
-    )
+    if is_esim:
+        profiles = refresh_profile_cache(force=True)
+        target_profile_name = profile_name_for_iccid(task["profile_iccid"], profiles)
+        active_profile = active_profile_from_list(profiles)
+        original_profile_iccid = str(active_profile.get("iccid", "")).strip()
+        original_profile_name = (
+            str(active_profile.get("display_name") or profile_display_name(active_profile)).strip()
+            if active_profile
+            else ""
+        )
+    else:
+        profiles = []
+        target_profile_name = "当前 SIM"
+        original_profile_iccid = ""
+        original_profile_name = ""
+
     switched_to_target = False
     notification_sent = False
     attempts = 0
@@ -1951,17 +2079,19 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
         ctx.log(f"计划时间：{format_beijing_timestamp(scheduled_for)}")
 
     try:
-        if task["profile_iccid"] != original_profile_iccid:
+        if is_esim and task.get("profile_iccid", "") and task["profile_iccid"] != original_profile_iccid:
             wait_for_keepalive_gap(ctx, settings["queue_gap_seconds"])
             switch_profile(ctx, {"iccid": task["profile_iccid"]}, schedule_gap_after=False)
             switched_to_target = True
             ctx.sleep(KEEPALIVE_SWITCH_SETTLE_SECONDS, "等待切卡后的网络重新稳定")
-        else:
+        elif is_esim:
             ctx.log("目标 Profile 当前已在使用，跳过切卡")
-            if apply_profile_smsc_if_configured(ctx, task["profile_iccid"]):
+            if apply_profile_smsc_if_configured(ctx, task.get("profile_iccid", "")):
                 ctx.log("已按目标 Profile 自动应用短信中心")
             else:
                 ctx.log("目标 Profile 未配置短信中心，继续按基带现有配置发送")
+        else:
+            ctx.log("普通 SIM 模式，跳过 Profile 切换，直接使用当前基带发送短信")
 
         send_success = False
         for attempt in range(1, KEEPALIVE_MAX_SEND_ATTEMPTS + 1):
@@ -2171,27 +2301,26 @@ def enqueue_keepalive_action(task: dict[str, Any], *, trigger: str, scheduled_fo
 def keepalive_scheduler() -> None:
     while True:
         try:
-            if esim_management_enabled():
-                _, tasks = load_keepalive_config()
-                now = datetime.now(BEIJING_TZ)
-                enabled_task_ids = {task["id"] for task in tasks if task["enabled"]}
-                with KEEPALIVE_RUNTIME_LOCK:
-                    stale_ids = [task_id for task_id in KEEPALIVE_LAST_ENQUEUED if task_id not in enabled_task_ids]
-                    for task_id in stale_ids:
-                        KEEPALIVE_LAST_ENQUEUED.pop(task_id, None)
+            _, tasks = load_keepalive_config()
+            now = datetime.now(BEIJING_TZ)
+            enabled_task_ids = {task["id"] for task in tasks if task["enabled"]}
+            with KEEPALIVE_RUNTIME_LOCK:
+                stale_ids = [task_id for task_id in KEEPALIVE_LAST_ENQUEUED if task_id not in enabled_task_ids]
+                for task_id in stale_ids:
+                    KEEPALIVE_LAST_ENQUEUED.pop(task_id, None)
 
-                for task in tasks:
-                    if not task["enabled"]:
+            for task in tasks:
+                if not task["enabled"]:
+                    continue
+                scheduled_at = due_keepalive_run(task, now)
+                if not scheduled_at:
+                    continue
+                schedule_key = keepalive_schedule_key(scheduled_at)
+                with KEEPALIVE_RUNTIME_LOCK:
+                    if KEEPALIVE_LAST_ENQUEUED.get(task["id"]) == schedule_key:
                         continue
-                    scheduled_at = due_keepalive_run(task, now)
-                    if not scheduled_at:
-                        continue
-                    schedule_key = keepalive_schedule_key(scheduled_at)
-                    with KEEPALIVE_RUNTIME_LOCK:
-                        if KEEPALIVE_LAST_ENQUEUED.get(task["id"]) == schedule_key:
-                            continue
-                        KEEPALIVE_LAST_ENQUEUED[task["id"]] = schedule_key
-                    enqueue_keepalive_action(task, trigger="schedule", scheduled_for=scheduled_at)
+                    KEEPALIVE_LAST_ENQUEUED[task["id"]] = schedule_key
+                enqueue_keepalive_action(task, trigger="schedule", scheduled_for=scheduled_at)
         except Exception as exc:
             print(f"keepalive scheduler failed: {exc}")
         time.sleep(KEEPALIVE_SCHEDULER_INTERVAL_SECONDS)
@@ -2328,6 +2457,12 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._write_json(500, {"error": str(exc)})
 
+    def _client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return self.client_address[0]
+
     def _authenticated(self) -> bool:
         return valid_session_cookie(self.headers.get("Cookie", ""))
 
@@ -2349,7 +2484,24 @@ class AppHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/auth/status":
-            self._write_json(200, self._auth_status_payload())
+            self._write_json(200, {**self._auth_status_payload(), "totp_enabled": totp_enabled()})
+            return
+
+        if path == "/api/auth/totp-status":
+            if not self._require_auth():
+                return
+            self._write_json(200, {"enabled": totp_enabled(), "secret": totp_secret()})
+            return
+
+        if path == "/api/auth/ban-status":
+            if not self._require_auth():
+                return
+            self._write_json(200, {
+                "enabled": brute_force_enabled(),
+                "max_attempts": brute_force_max_attempts(),
+                "lan_enabled": brute_force_lan_enabled(),
+                "banned_ips": sorted(banned_ips()),
+            })
             return
 
         if path.startswith("/api/") and not self._require_auth():
@@ -2389,14 +2541,27 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             data = self._read_json_body()
             if path == "/api/auth/login":
+                client_ip = self._client_ip()
+                if is_ip_banned(client_ip):
+                    self._write_json(403, {"error": "IP 已被封禁，请稍后再试"})
+                    return
                 username = str(data.get("username", "")).strip()
                 password = str(data.get("password", ""))
+                totp_code_value = str(data.get("totp_code", "")).strip()
                 if not auth_enabled():
                     self._write_json(200, self._auth_status_payload())
                     return
                 if username != auth_username() or not verify_password(password):
+                    record_failed_attempt(client_ip)
                     self._write_json(401, {"error": "用户名或密码不正确", "authenticated": False})
                     return
+                if totp_enabled() and not totp_code_value:
+                    self._write_json(200, {"totp_required": True, "username": username})
+                    return
+                if totp_enabled():
+                    if not verify_totp(totp_secret(), totp_code_value):
+                        self._write_json(401, {"error": "二次认证验证码不正确"})
+                        return
                 cookie_value = make_session_cookie(username)
                 self._write_json(
                     200,
@@ -2415,6 +2580,89 @@ class AppHandler(BaseHTTPRequestHandler):
                     {"ok": True, "authenticated": False},
                     extra_headers={"Set-Cookie": f"{AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"},
                 )
+                return
+            if path == "/api/auth/change-password":
+                if not auth_enabled():
+                    self._write_json(400, {"error": "当前未启用密码认证"})
+                    return
+                old_password = str(data.get("old_password", ""))
+                new_username = str(data.get("new_username", "")).strip()
+                new_password = str(data.get("new_password", "")).strip()
+                config = read_env_config(APP_CONFIG_PATH)
+                if new_username:
+                    if not new_username or len(new_username) < 2:
+                        self._write_json(400, {"error": "用户名不能少于 2 位"})
+                        return
+                    config["LINKHIVE_ADMIN_USER"] = new_username
+                if new_password:
+                    if not verify_password(old_password):
+                        self._write_json(401, {"error": "旧密码不正确"})
+                        return
+                    if len(new_password) < 4:
+                        self._write_json(400, {"error": "新密码不能少于 4 位"})
+                        return
+                    salt = secrets.token_hex(16)
+                    new_hash = f"pbkdf2:sha256:{salt}${hash_password(new_password, salt)}"
+                    config["LINKHIVE_PASSWORD_HASH"] = new_hash
+                write_env_config(APP_CONFIG_PATH, config)
+                self._write_json(200, {"ok": True, "message": "账户信息已修改"})
+                return
+            if path == "/api/auth/totp-setup":
+                secret = generate_totp_secret()
+                otpauth_url = totp_otpauth_url(secret, auth_username())
+                config = read_env_config(APP_CONFIG_PATH)
+                config["LINKHIVE_TOTP_SECRET"] = secret
+                config["LINKHIVE_TOTP_ENABLED"] = "false"
+                write_env_config(APP_CONFIG_PATH, config)
+                self._write_json(200, {"ok": True, "secret": secret, "otpauth_url": otpauth_url})
+                return
+            if path == "/api/auth/totp-verify":
+                code = str(data.get("code", "")).strip()
+                secret = totp_secret()
+                if not secret:
+                    self._write_json(400, {"error": "请先生成二次认证密钥"})
+                    return
+                if not verify_totp(secret, code):
+                    self._write_json(401, {"error": "验证码不正确"})
+                    return
+                config = read_env_config(APP_CONFIG_PATH)
+                config["LINKHIVE_TOTP_ENABLED"] = "true"
+                write_env_config(APP_CONFIG_PATH, config)
+                self._write_json(200, {"ok": True, "message": "二次认证已启用"})
+                return
+            if path == "/api/auth/totp-disable":
+                if not self._require_auth():
+                    return
+                config = read_env_config(APP_CONFIG_PATH)
+                config["LINKHIVE_TOTP_ENABLED"] = "false"
+                write_env_config(APP_CONFIG_PATH, config)
+                self._write_json(200, {"ok": True, "message": "二次认证已禁用"})
+                return
+            if path == "/api/auth/ban-settings":
+                if not self._require_auth():
+                    return
+                enabled = str(data.get("enabled", "false")).strip().lower()
+                max_attempts = str(data.get("max_attempts", "5")).strip()
+                lan_enabled = str(data.get("lan_enabled", "false")).strip().lower()
+                config = read_env_config(APP_CONFIG_PATH)
+                config["LINKHIVE_BRUTE_FORCE_ENABLED"] = "true" if enabled in {"1", "true", "yes"} else "false"
+                config["LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS"] = max_attempts
+                config["LINKHIVE_BRUTE_FORCE_LAN_ENABLED"] = "true" if lan_enabled in {"1", "true", "yes"} else "false"
+                write_env_config(APP_CONFIG_PATH, config)
+                self._write_json(200, {"ok": True, "message": "防暴力破解配置已更新"})
+                return
+            if path == "/api/auth/unban-ip":
+                if not self._require_auth():
+                    return
+                ip = str(data.get("ip", "")).strip()
+                if not ip:
+                    self._write_json(400, {"error": "缺少 IP"})
+                    return
+                current = banned_ips()
+                if ip in current:
+                    current.remove(ip)
+                    save_banned_ips(current)
+                self._write_json(200, {"ok": True, "message": f"已解封 {ip}"})
                 return
             if path.startswith("/api/") and not self._require_auth():
                 return

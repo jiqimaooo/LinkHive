@@ -9,6 +9,7 @@ import {
   MonitorIcon,
   ScrollTextIcon,
   Settings2Icon,
+  ShieldCheckIcon,
   SmartphoneIcon,
   TerminalIcon,
   SendIcon,
@@ -58,8 +59,7 @@ const MAIN_MENU = [
     icon: Settings2Icon,
     children: [
       { title: "模式切换", path: "/settings/mode", icon: SmartphoneNfcIcon },
-      { title: "APN配置", path: "/settings/apn", icon: Settings2Icon },
-      { title: "网络与选网", path: "/settings/network", icon: MonitorIcon },
+      { title: "安全设置", path: "/settings/security", icon: ShieldCheckIcon },
     ],
   },
   {
@@ -73,10 +73,12 @@ export function Sidebar() {
   const location = useLocation()
   const { authStatus, logout, esimEnabled } = useAppContext()
 
-  // 普通SIM模式下过滤掉eSIM相关菜单
-  const visibleMenu = MAIN_MENU.filter((item) => {
-    if (item.path === "/sim-cards" && !esimEnabled) return false
-    return true
+  // 普通SIM模式下 SIM卡管理只显示保活任务，不显示 Profiles
+  const visibleMenu = MAIN_MENU.map((item) => {
+    if (item.path === "/sim-cards" && !esimEnabled) {
+      return { ...item, children: item.children?.filter((c) => c.path === "/sim-cards/keepalive") }
+    }
+    return item
   })
 
   const isParentActive = (item: typeof MAIN_MENU[number]) => {

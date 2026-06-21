@@ -11,7 +11,6 @@ export default function ModeSwitchPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        icon={SmartphoneNfcIcon}
         title="模式切换"
         description="切换普通 SIM 和 eSIM 工作模式。切换后相关功能会自动启用或禁用。"
       />
@@ -83,17 +82,5 @@ export default function ModeSwitchPage() {
         </CardContent>
       </Card>
     </div>
-  )
-}
-
-function SmartphoneNfcIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect width="7" height="12" x="2" y="6" rx="1" />
-      <path d="M22 6v12" />
-      <path d="M18 6v12" />
-      <path d="M14 6v12" />
-      <path d="M9 6v12" />
-    </svg>
   )
 }

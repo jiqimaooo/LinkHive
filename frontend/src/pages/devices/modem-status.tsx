@@ -1,7 +1,5 @@
 import {
-  CardSimIcon,
   RadioTowerIcon,
-  SignalIcon,
   SendIcon,
   RouterIcon,
   RefreshCwIcon,
@@ -9,7 +7,6 @@ import {
 } from "lucide-react"
 import { useAppContext } from "@/hooks/app-context"
 import { PageHeader } from "@/components/shared/page-header"
-import { StatCard } from "@/components/shared/stat-card"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -36,14 +33,19 @@ export default function ModemStatusPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        icon={MonitorIcon}
         title="基带状态"
         description="查看实时基带信息、信号强度和设备控制。"
         actions={
           <>
-            {activeAction ? <Badge variant="outline" className="h-8">{friendlyActionName(activeAction.action)}</Badge> : null}
-            <button type="button" onClick={() => { void refreshStatus(false, true) }} disabled={isRefreshing} className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 h-8 text-sm hover:bg-muted">
-              <RefreshCwIcon className={isRefreshing ? "animate-spin" : ""} />{isRefreshing ? "刷新中..." : "刷新状态"}
+            {activeAction ? <Badge variant="outline">{friendlyActionName(activeAction.action)}</Badge> : null}
+            <button
+              type="button"
+              onClick={() => { void refreshStatus(false, true) }}
+              disabled={isRefreshing}
+              className="inline-flex items-center justify-center size-8 rounded-lg text-muted-foreground hover:bg-slate-100 hover:text-foreground transition-colors disabled:opacity-50"
+              aria-label="刷新"
+            >
+              <RefreshCwIcon className={isRefreshing ? "animate-spin size-4" : "size-4"} />
             </button>
           </>
         }
@@ -56,11 +58,36 @@ export default function ModemStatusPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={CardSimIcon} label={esimEnabled ? "当前 Profile" : "当前 SIM"} value={activeProfileLabel} hint={`手机号：${status?.modem.number || "--"}`} />
-        <StatCard icon={RadioTowerIcon} label="运营商" value={status?.modem.operator_name || "--"} hint={`${status?.modem.operator_code || "--"} · ${formatRegistrationState(status?.modem.registration || "--")}`} />
-        <StatCard icon={SignalIcon} label="信号与制式" value={`${status?.modem.signal || "--"}%`} hint={`${formatAccessTech(status?.modem.access_tech || "--")}\n${formatCurrentModes(status?.modem.current_modes || "--")}`} badgeVariant={signalVariant(status?.modem.signal || "--")} />
-        <StatCard icon={SendIcon} label="短信转发" value={status?.services.sms_forwarder || "--"} hint={configuredCount ? `已配置 ${configuredCount} 个渠道` : "未配置"} badgeVariant={serviceVariant(status?.services.sms_forwarder || "")} />
+      {/* 设备状态概览 */}
+      <div className="rounded-xl border border-[#e5e7eb] bg-white p-5">
+        <h3 className="text-xs font-medium text-[#64748b] mb-4">设备状态概览</h3>
+        <div className="grid grid-cols-4 divide-x divide-[#f1f5f9]">
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">{esimEnabled ? "当前 Profile" : "当前 SIM"}</span>
+            <span className="text-base font-semibold text-[#0f172a]">{activeProfileLabel}</span>
+            <span className="text-sm text-[#64748b]">手机号：{status?.modem.number || "--"}</span>
+          </div>
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">运营商</span>
+            <span className="text-base font-semibold text-[#0f172a]">{status?.modem.operator_name || "--"}</span>
+            <span className="text-sm text-[#64748b]">{status?.modem.operator_code || "--"} · {formatRegistrationState(status?.modem.registration || "--")}</span>
+          </div>
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">信号状态</span>
+            <span className="text-base font-semibold text-[#0f172a]">{formatAccessTech(status?.modem.access_tech || "--")}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[#64748b]">信号强度</span>
+              <Badge variant={signalVariant(status?.modem.signal || "--")} className="h-5 rounded-full text-[0.688rem] font-medium">{status?.modem.signal || "--"}%</Badge>
+            </div>
+          </div>
+          <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
+            <span className="text-xs font-medium text-[#64748b]">短信转发</span>
+            <div className="flex items-center gap-2">
+              <Badge variant={serviceVariant(status?.services.sms_forwarder || "")} className="h-5 rounded-full text-[0.688rem] font-medium">{status?.services.sms_forwarder || "--"}</Badge>
+            </div>
+            <span className="text-sm text-[#64748b]">{configuredCount ? `已配置 ${configuredCount} 个渠道` : "未配置"}</span>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -97,10 +124,6 @@ export default function ModemStatusPage() {
 
 function DetailItem({ label, value }: { label: string; value: string }) {
   return <div className="rounded-lg border p-2.5"><span className="text-xs text-muted-foreground">{label}</span><p className="text-sm font-medium whitespace-pre-line">{value}</p></div>
-}
-
-function MonitorIcon({ className }: { className?: string }) {
-  return <svg className={className} xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></svg>
 }
 
 function SettingsIcon({ className }: { className?: string }) {

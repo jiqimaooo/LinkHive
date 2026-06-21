@@ -17,7 +17,7 @@ export default function ProfilesPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader icon={CardSimIcon} title="eSIM Profiles" description={esimEnabled ? "管理 eSIM Profiles 和短信中心配置。" : "当前为普通 SIM 模式，eSIM 管理功能已禁用。"} actions={<Badge variant="outline" className="h-8">{profileCountLabel}</Badge>} />
+      <PageHeader title="eSIM Profiles" description={esimEnabled ? "管理 eSIM Profiles 和短信中心配置。" : "当前为普通 SIM 模式，eSIM 管理功能已禁用。"} actions={<Badge variant="outline" className="h-8">{profileCountLabel}</Badge>} />
 
       <Card className="border-slate-200 bg-white h-[calc(100vh-16rem)] flex flex-col">
         <CardHeader><CardTitle className="text-base flex items-center gap-2"><CardSimIcon className="size-4" />Profiles</CardTitle></CardHeader>

@@ -3,6 +3,7 @@ import { NOTIFICATION_CHANNEL_DEFINITIONS, NOTIFICATION_CHANNEL_ORDER } from "./
 
 export function inferRadioMode(currentModes: string) {
   const normalized = currentModes.toLowerCase()
+  if (normalized.includes("none") || normalized.includes("any")) return "network_disabled"
   if (normalized.includes("4g") && !normalized.includes("3g")) return "4g_only"
   if (normalized.includes("3g") && !normalized.includes("4g")) return "3g_only"
   return "3g4g_prefer4g"
@@ -18,6 +19,7 @@ export function formatRegistrationState(registration: string) {
     unknown: "未知",
     registered: "已注册",
     idle: "空闲",
+    disabled: "已禁用",
   }
   return labels[normalized] || registration || "--"
 }

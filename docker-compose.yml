@@ -1,0 +1,10 @@
+services:
+  linkhive:
+    build: .
+    container_name: linkhive
+    ports:
+      - "7575:8080"
+    restart: unless-stopped
+    environment:
+      - FOURG_WIFI_ADMIN_HOST=0.0.0.0
+      - FOURG_WIFI_ADMIN_PORT=8080

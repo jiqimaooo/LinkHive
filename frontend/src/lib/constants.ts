@@ -19,9 +19,9 @@ export const NOTIFICATION_CHANNEL_DEFINITIONS: Record<ChannelKind, NotificationC
         label: "推送级别",
         placeholder: "选择推送级别",
         options: [
-          { label: "active", value: "active" },
-          { label: "timeSensitive", value: "timeSensitive" },
-          { label: "passive", value: "passive" },
+          { label: "即时推送", value: "active" },
+          { label: "时效提醒", value: "timeSensitive" },
+          { label: "静默送达", value: "passive" },
         ],
       },
     ],

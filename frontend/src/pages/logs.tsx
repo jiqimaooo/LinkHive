@@ -14,7 +14,6 @@ export default function LogsPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        icon={TerminalSquareIcon}
         title="实时日志"
         description="所有操作的实时执行日志，页面关闭后重新打开也会恢复追踪。"
         actions={<div className="flex items-center gap-2">{activeAction ? <Badge variant="outline" className="border-sky-400/40 text-sky-600">{friendlyActionName(activeAction.action)}</Badge> : <Badge variant="outline">空闲</Badge>}<Button type="button" size="sm" variant="outline" onClick={() => setLogs([])}>清空日志</Button></div>}

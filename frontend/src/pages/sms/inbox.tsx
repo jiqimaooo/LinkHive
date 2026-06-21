@@ -6,7 +6,10 @@ import { EmptyState } from "@/components/shared/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 
@@ -14,6 +17,8 @@ export default function SmsInboxPage() {
   const { status, runAction, actionBusy } = useAppContext()
   const [searchText, setSearchText] = useState("")
   const [selectedSms, setSelectedSms] = useState<string | null>(null)
+  const [sendOpen, setSendOpen] = useState(false)
+  const [sendForm, setSendForm] = useState({ number: "", message: "" })
 
   const smsList = status?.sms ?? []
   const filtered = searchText.trim() ? smsList.filter((sms) => sms.number.includes(searchText) || sms.text.toLowerCase().includes(searchText.toLowerCase())) : smsList
@@ -22,10 +27,18 @@ export default function SmsInboxPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        icon={MessageSquareTextIcon}
         title="短信收件箱"
         description="查看收到的短信，支持中文和 Base64 文本自动还原。"
-        actions={<Button type="button" variant="outline" size="sm" disabled={actionBusy || !smsList.length} onClick={() => { void runAction("resend_last_sms", {}, "重发最后一条短信") }}><SendIcon data-icon="inline-start" />重发最后一条</Button>}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" onClick={() => setSendOpen(true)} disabled={actionBusy}>
+              <SendIcon data-icon="inline-start" />发送短信
+            </Button>
+            <Button type="button" variant="outline" size="sm" disabled={actionBusy || !smsList.length} onClick={() => { void runAction("resend_last_sms", {}, "重发最后一条短信") }}>
+              重发最后一条
+            </Button>
+          </div>
+        }
       />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
@@ -64,6 +77,49 @@ export default function SmsInboxPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={sendOpen} onOpenChange={setSendOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>发送短信</DialogTitle>
+            <DialogDescription>输入目标号码和短信内容，通过当前基带发送。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="send-number">目标号码</Label>
+              <Input
+                id="send-number"
+                value={sendForm.number}
+                onChange={(e) => setSendForm((f) => ({ ...f, number: e.target.value }))}
+                placeholder="例如 +447000000000"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="send-message">短信内容</Label>
+              <Textarea
+                id="send-message"
+                value={sendForm.message}
+                onChange={(e) => setSendForm((f) => ({ ...f, message: e.target.value }))}
+                rows={4}
+                placeholder="输入要发送的短信内容..."
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSendOpen(false)}>取消</Button>
+            <Button
+              disabled={actionBusy || !sendForm.number.trim() || !sendForm.message.trim()}
+              onClick={() => {
+                void runAction("send_test_sms", { number: sendForm.number.trim(), message: sendForm.message }, `发送短信到 ${sendForm.number.trim()}`)
+                setSendOpen(false)
+                setSendForm({ number: "", message: "" })
+              }}
+            >
+              <SendIcon data-icon="inline-start" />发送
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

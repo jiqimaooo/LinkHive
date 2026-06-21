@@ -8,7 +8,8 @@ export type AppContextType = {
   loginForm: { username: string; password: string }
   setLoginForm: (updater: (current: { username: string; password: string }) => { username: string; password: string }) => void
   isLoggingIn: boolean
-  login: () => Promise<void>
+  totpRequired: boolean
+  login: (totpCode?: string) => Promise<void>
   logout: () => Promise<void>
 
   // Status

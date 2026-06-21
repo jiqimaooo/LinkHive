@@ -5,15 +5,28 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger } from "@/components/ui/select"
 import { formatAccessTech, formatCurrentModes } from "@/lib/helpers"
+
+const RADIO_MODE_LABELS: Record<string, string> = {
+  network_disabled: "禁用蜂窝数据",
+  "4g_only": "仅 4G",
+  "3g4g_prefer4g": "3G / 4G，优先 4G",
+  "3g_only": "仅 3G",
+}
+
+const IP_TYPE_LABELS: Record<string, string> = {
+  ipv4: "仅 IPv4",
+  ipv6: "仅 IPv6",
+  ipv4v6: "IPv4 / IPv6",
+}
 
 export default function NetworkSettingsPage() {
   const { apnForm, setApnForm, radioMode, setRadioMode, networkCode, setNetworkCode, status, actionBusy, runAction, apnDirtyRef, networkDirtyRef, radioModeDirtyRef } = useAppContext()
 
   return (
     <div className="space-y-4">
-      <PageHeader icon={SignalIcon} title="网络设置" description="配置 APN、网络制式和手动选网。" />
+      <PageHeader title="网络设置" description="配置 APN、网络制式和手动选网。" />
 
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <Card className="border-slate-200 bg-white">
@@ -30,8 +43,10 @@ export default function NetworkSettingsPage() {
             <div className="grid gap-2 md:max-w-xs">
               <Label>IP 类型</Label>
               <Select value={apnForm.ip_type} onValueChange={(v) => { apnDirtyRef.current = true; setApnForm((c) => ({ ...c, ip_type: v ?? c.ip_type })) }}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="选择 IP 类型" /></SelectTrigger>
-                <SelectContent><SelectGroup><SelectLabel>承载模式</SelectLabel><SelectItem value="ipv4">IPv4</SelectItem><SelectItem value="ipv6">IPv6</SelectItem><SelectItem value="ipv4v6">IPv4 / IPv6</SelectItem></SelectGroup></SelectContent>
+                <SelectTrigger className="w-full">
+                  <span className={apnForm.ip_type ? "" : "text-muted-foreground"}>{IP_TYPE_LABELS[apnForm.ip_type] || "选择 IP 类型"}</span>
+                </SelectTrigger>
+                <SelectContent><SelectGroup><SelectLabel>承载模式</SelectLabel><SelectItem value="ipv4">仅 IPv4</SelectItem><SelectItem value="ipv6">仅 IPv6</SelectItem><SelectItem value="ipv4v6">IPv4 / IPv6</SelectItem></SelectGroup></SelectContent>
               </Select>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -46,9 +61,11 @@ export default function NetworkSettingsPage() {
             <CardHeader><CardTitle className="text-base flex items-center gap-2"><SignalIcon className="size-4 text-muted-foreground" />网络制式</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <p className="whitespace-pre-line text-sm text-muted-foreground">{`${formatAccessTech(status?.modem.access_tech || "--")}\n${formatCurrentModes(status?.modem.current_modes || "--")}`}</p>
-              <Select value={radioMode} onValueChange={(v) => { radioModeDirtyRef.current = true; setRadioMode(v ?? "3g4g_prefer4g") }}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="选择网络制式" /></SelectTrigger>
-                <SelectContent><SelectGroup><SelectLabel>网络制式</SelectLabel><SelectItem value="4g_only">仅 4G</SelectItem><SelectItem value="3g4g_prefer4g">3G / 4G，优先 4G</SelectItem><SelectItem value="3g_only">仅 3G</SelectItem></SelectGroup></SelectContent>
+              <Select value={radioMode} onValueChange={(v) => { radioModeDirtyRef.current = true; setRadioMode(v ?? "network_disabled") }}>
+                <SelectTrigger className="w-full">
+                  <span className={radioMode ? "" : "text-muted-foreground"}>{RADIO_MODE_LABELS[radioMode] || "选择网络制式"}</span>
+                </SelectTrigger>
+                <SelectContent><SelectGroup><SelectLabel>网络制式</SelectLabel><SelectItem value="network_disabled">禁用蜂窝数据</SelectItem><SelectItem value="4g_only">仅 4G</SelectItem><SelectItem value="3g4g_prefer4g">3G / 4G，优先 4G</SelectItem><SelectItem value="3g_only">仅 3G</SelectItem></SelectGroup></SelectContent>
               </Select>
               <Button type="button" variant="outline" className="w-full" disabled={actionBusy} onClick={() => { void runAction("apply_radio_mode", { mode: radioMode }, "应用网络制式") }}>应用</Button>
             </CardContent>
