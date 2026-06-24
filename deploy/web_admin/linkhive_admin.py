@@ -302,11 +302,11 @@ def esim_management_enabled() -> bool:
     raw = str(config.get("ESIM_MANAGEMENT_ENABLED", "")).strip().lower()
     if raw:
         return raw in {"1", "true", "yes", "enabled"}
-    return str(config.get("SIM_TYPE", "esim")).strip().lower() != "physical"
+    return str(config.get("SIM_TYPE", "physical")).strip().lower() != "physical"
 
 
 def sim_type() -> str:
-    return str(app_runtime_config().get("SIM_TYPE", "esim")).strip().lower() or "esim"
+    return str(app_runtime_config().get("SIM_TYPE", "physical")).strip().lower() or "physical"
 
 
 def normalize_sim_type(raw_value: Any) -> str:
@@ -406,8 +406,14 @@ def _totp_hotp(secret_bytes: bytes, counter: int) -> int:
     return binary % 1_000_000
 
 
+def decode_totp_secret(secret: str) -> bytes:
+    normalized = secret.strip().replace(" ", "").upper()
+    padding = "=" * ((8 - len(normalized) % 8) % 8)
+    return b32decode(normalized + padding)
+
+
 def totp_code(secret: str) -> str:
-    secret_bytes = b32decode(secret + "====")
+    secret_bytes = decode_totp_secret(secret)
     counter = int(time.time() // 30)
     return str(_totp_hotp(secret_bytes, counter)).zfill(6)
 
@@ -417,7 +423,7 @@ def verify_totp(secret: str, code: str) -> bool:
     if not re.fullmatch(r"\d{6}", normalized):
         return False
     try:
-        secret_bytes = b32decode(secret + "====")
+        secret_bytes = decode_totp_secret(secret)
     except Exception:
         return False
     current_counter = int(time.time() // 30)
