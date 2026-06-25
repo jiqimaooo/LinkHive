@@ -21,11 +21,11 @@ import LogsPage from "@/pages/logs"
 
 function AppLayout() {
   return (
-    <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
-      <div className="grid min-h-screen lg:grid-cols-[16rem_minmax(0,1fr)]">
+    <div className="min-h-screen overflow-x-hidden bg-[#f5f7fb] text-slate-900">
+      <div className="grid min-h-screen min-w-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <Sidebar />
-        <main className="min-w-0 px-4 py-5 sm:px-6 lg:px-8">
-          <div className="mx-auto flex min-h-screen w-full max-w-[96rem] flex-col gap-4 pb-24 sm:pb-28">
+        <main className="min-w-0 px-0 py-0 lg:px-8 lg:py-5">
+          <div className="mx-auto flex min-h-screen w-full max-w-[96rem] flex-col gap-4 px-4 pb-8 pt-4 sm:px-6 sm:pb-10 lg:px-0 lg:pb-28 lg:pt-0">
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/devices" element={<Navigate to="/devices/modem" replace />} />

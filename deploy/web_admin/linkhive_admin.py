@@ -8,10 +8,12 @@ import json
 import mimetypes
 import os
 import re
+import select
 import secrets
 import shlex
 import subprocess
 import sys
+import termios
 import threading
 import time
 import uuid
@@ -159,6 +161,9 @@ PROFILE_CACHE_LOCK = threading.Lock()
 KEEPALIVE_RUNTIME_LOCK = threading.Lock()
 KEEPALIVE_LAST_ENQUEUED: dict[str, str] = {}
 KEEPALIVE_NEXT_ALLOWED_AT = 0.0
+DASHBOARD_TRAFFIC_LOCK = threading.Lock()
+DASHBOARD_TRAFFIC_BASELINE: dict[str, Any] = {"date": "", "rx": 0, "tx": 0, "iface": ""}
+DASHBOARD_TRAFFIC_HISTORY: deque[dict[str, Any]] = deque(maxlen=48)
 
 
 def run_command(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -577,6 +582,132 @@ def parse_signal_value(raw_value: str) -> int:
         return max(0, int(str(raw_value).strip()))
     except Exception:
         return 0
+
+
+def normalize_signal_dbm(raw_value: str) -> str:
+    value = str(raw_value or "").strip().replace("dBm", "").strip()
+    if not value or value == "--":
+        return "--"
+    try:
+        number = float(value)
+    except Exception:
+        return "--"
+    if number.is_integer():
+        return f"{int(number)} dBm"
+    return f"{number:.1f} dBm"
+
+
+def modem_at_ports(modem: dict[str, str]) -> list[str]:
+    ports: list[str] = []
+    for key, value in modem.items():
+        if not key.startswith("modem.generic.ports.value"):
+            continue
+        match = re.match(r"([A-Za-z0-9._/-]+)\s+\(([^)]+)\)", str(value).strip())
+        if not match or match.group(2) != "at":
+            continue
+        port_name = match.group(1)
+        port_path = port_name if port_name.startswith("/dev/") else f"/dev/{port_name}"
+        if port_path not in ports:
+            ports.append(port_path)
+    return sorted(ports, reverse=True)
+
+
+def run_at_command(port_path: str, command: str, timeout_seconds: float = 1.2) -> str:
+    fd = os.open(port_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    old_attrs = termios.tcgetattr(fd)
+    try:
+        attrs = termios.tcgetattr(fd)
+        attrs[0] = 0
+        attrs[1] = 0
+        attrs[2] = termios.B115200 | termios.CS8 | termios.CREAD | termios.CLOCAL
+        attrs[3] = 0
+        attrs[6][termios.VMIN] = 0
+        attrs[6][termios.VTIME] = 5
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        os.write(fd, f"{command}\r".encode())
+        deadline = time.time() + timeout_seconds
+        chunks: list[bytes] = []
+        while time.time() < deadline:
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if fd not in readable:
+                continue
+            try:
+                chunks.append(os.read(fd, 8192))
+            except BlockingIOError:
+                continue
+        return b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
+        finally:
+            os.close(fd)
+
+
+def first_at_response(modem: dict[str, str], command: str, timeout_seconds: float = 1.2) -> str:
+    for port_path in modem_at_ports(modem):
+        try:
+            response = run_at_command(port_path, command, timeout_seconds)
+        except Exception:
+            continue
+        if response.strip():
+            return response
+    return ""
+
+
+def parse_qcsq_signal_dbm(raw_response: str) -> str:
+    match = re.search(r'\+QCSQ:\s*"([^"]+)"\s*,\s*([-\d]+)(?:\s*,\s*([-\d]+))?', raw_response)
+    if not match:
+        return "--"
+    mode = match.group(1).lower()
+    if mode == "lte":
+        lte_match = re.search(r'\+QCSQ:\s*"LTE"\s*,\s*([-\d]+)\s*,\s*([-\d]+)\s*,\s*([-\d]+)\s*,\s*([-\d]+)', raw_response)
+        if lte_match:
+            return normalize_signal_dbm(lte_match.group(2))
+    return normalize_signal_dbm(match.group(2))
+
+
+def parse_csq_signal_dbm(raw_response: str) -> str:
+    match = re.search(r"\+CSQ:\s*(\d+)\s*,", raw_response)
+    if not match:
+        return "--"
+    rssi = int(match.group(1))
+    if rssi == 99:
+        return "--"
+    return normalize_signal_dbm(str(-113 + 2 * rssi))
+
+
+def read_at_signal_dbm(modem: dict[str, str]) -> str:
+    qcsq_signal = parse_qcsq_signal_dbm(first_at_response(modem, "AT+QCSQ", 1.5))
+    if qcsq_signal != "--":
+        return qcsq_signal
+    return parse_csq_signal_dbm(first_at_response(modem, "AT+CSQ", 1.5))
+
+
+def read_modem_signal_dbm(modem: dict[str, str]) -> str:
+    result = run_command(["mmcli", "-m", "any", "--signal-get", "-K"], check=False)
+    if result.returncode == 0:
+        metrics = parse_mmcli_kv(result.stdout)
+        access_tech = modem.get("modem.generic.access-technologies.value[1]", "--")
+        normalized_access_tech = str(access_tech or "").strip().lower()
+        if "lte" in normalized_access_tech:
+            preferred_keys = ["modem.signal.lte.rsrp", "modem.signal.lte.rssi"]
+        elif "umts" in normalized_access_tech or "3g" in normalized_access_tech:
+            preferred_keys = ["modem.signal.umts.rscp", "modem.signal.umts.rssi"]
+        elif "gsm" in normalized_access_tech or "2g" in normalized_access_tech:
+            preferred_keys = ["modem.signal.gsm.rssi"]
+        else:
+            preferred_keys = [
+                "modem.signal.lte.rsrp",
+                "modem.signal.lte.rssi",
+                "modem.signal.umts.rscp",
+                "modem.signal.umts.rssi",
+                "modem.signal.gsm.rssi",
+            ]
+        for key in preferred_keys:
+            signal_dbm = normalize_signal_dbm(metrics.get(key, ""))
+            if signal_dbm != "--":
+                return signal_dbm
+    return read_at_signal_dbm(modem)
 
 
 def normalize_weekdays(raw_value: Any) -> list[str]:
@@ -1250,6 +1381,48 @@ def list_sms() -> tuple[list[dict[str, str]], Optional[str]]:
     return messages, None
 
 
+def cpms_set_command(memories: list[str]) -> str:
+    quoted = ",".join(f'"{memory}"' for memory in memories)
+    return f"AT+CPMS={quoted}"
+
+
+def parse_cpms_memories(raw_response: str) -> list[str]:
+    return re.findall(r'"([^"]+)"\s*,\s*\d+\s*,\s*\d+', raw_response)[:3]
+
+
+def parse_cpms_first_count(raw_response: str) -> Optional[int]:
+    match = re.search(r"\+CPMS:\s*(?:\"[^\"]+\"\s*,\s*)?(\d+)\s*,\s*(\d+)", raw_response)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def read_sms_storage_counts(modem: dict[str, str], fallback_device_count: int) -> dict[str, int]:
+    for port_path in modem_at_ports(modem):
+        original_memories: list[str] = []
+        try:
+            original_response = run_at_command(port_path, "AT+CPMS?", 1.2)
+            original_memories = parse_cpms_memories(original_response)
+            device_count = parse_cpms_first_count(run_at_command(port_path, cpms_set_command(["ME", "ME", "ME"]), 1.5))
+            sim_count = parse_cpms_first_count(run_at_command(port_path, cpms_set_command(["SM", "SM", "SM"]), 1.5))
+            if original_memories:
+                restore_memories = (original_memories + ["MT", "MT", "MT"])[:3]
+                run_at_command(port_path, cpms_set_command(restore_memories), 1.0)
+            return {
+                "device_count": fallback_device_count if device_count is None else device_count,
+                "sim_count": 0 if sim_count is None else sim_count,
+            }
+        except Exception:
+            if original_memories:
+                try:
+                    restore_memories = (original_memories + ["MT", "MT", "MT"])[:3]
+                    run_at_command(port_path, cpms_set_command(restore_memories), 1.0)
+                except Exception:
+                    pass
+            continue
+    return {"device_count": fallback_device_count, "sim_count": 0}
+
+
 def parse_sms_paths(raw: str) -> list[str]:
     return re.findall(r"(/org/freedesktop/ModemManager1/SMS/\d+)", raw)
 
@@ -1289,6 +1462,166 @@ def service_state(name: str) -> str:
 def get_connection_info() -> dict[str, str]:
     result = run_command(["nmcli", "connection", "show", "modem"], check=False)
     return parse_mmcli_kv(result.stdout) if result.returncode == 0 else {}
+
+
+def normalize_dashboard_value(raw_value: Any) -> str:
+    value = str(raw_value or "").strip()
+    return "" if not value or value == "--" else value
+
+
+def first_dashboard_value(*values: Any) -> str:
+    for value in values:
+        normalized = normalize_dashboard_value(value)
+        if normalized:
+            return normalized
+    return ""
+
+
+def get_modem_sim_info(modem: dict[str, str]) -> dict[str, str]:
+    sim_path = first_dashboard_value(modem.get("modem.generic.sim"))
+    if not sim_path:
+        return {}
+    result = run_command(["mmcli", "-i", sim_path, "-K"], check=False)
+    return parse_mmcli_kv(result.stdout) if result.returncode == 0 else {}
+
+
+def get_active_cellular_interface() -> str:
+    result = run_command(["nmcli", "-t", "-f", "NAME,DEVICE,TYPE", "connection", "show", "--active"], check=False)
+    if result.returncode != 0:
+        return ""
+    fallback = ""
+    for raw_line in result.stdout.splitlines():
+        parts = raw_line.split(":")
+        if len(parts) < 3:
+            continue
+        name, device, conn_type = parts[0], parts[1], parts[2]
+        if not device or device == "--":
+            continue
+        if conn_type in {"gsm", "cdma"} or name == "modem":
+            return device
+        if not fallback and device.startswith(("wwan", "usb", "ppp")):
+            fallback = device
+    return fallback
+
+
+def read_interface_ip(interface_name: str) -> str:
+    if not interface_name:
+        return ""
+    for family in ("-4", "-6"):
+        result = run_command(["ip", "-o", family, "addr", "show", "dev", interface_name], check=False)
+        if result.returncode != 0:
+            continue
+        match = re.search(r"\sinet6?\s+([^\s/]+)", result.stdout)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def read_interface_counter(interface_name: str, counter_name: str) -> int:
+    if not interface_name or not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface_name):
+        return 0
+    counter_path = Path("/sys/class/net") / interface_name / "statistics" / counter_name
+    try:
+        return max(0, int(counter_path.read_text(encoding="utf-8").strip()))
+    except Exception:
+        return 0
+
+
+def find_modem_band(modem: dict[str, str]) -> str:
+    preferred_keys = (
+        "modem.3gpp.frequency-band",
+        "modem.generic.current-bands.value[1]",
+        "modem.generic.current-bands",
+        "modem.3gpp.lte.frequency-band",
+    )
+    direct = first_dashboard_value(*(modem.get(key) for key in preferred_keys))
+    if direct:
+        return direct
+    for key, value in modem.items():
+        key_lower = key.lower()
+        if "band" in key_lower or "earfcn" in key_lower:
+            normalized = normalize_dashboard_value(value)
+            if normalized:
+                return normalized
+    return ""
+
+
+def dashboard_traffic_snapshot(interface_name: str) -> dict[str, Any]:
+    today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+    rx_bytes = read_interface_counter(interface_name, "rx_bytes")
+    tx_bytes = read_interface_counter(interface_name, "tx_bytes")
+    now_label = datetime.now(BEIJING_TZ).strftime("%H:%M")
+
+    with DASHBOARD_TRAFFIC_LOCK:
+        baseline_changed = (
+            DASHBOARD_TRAFFIC_BASELINE["date"] != today
+            or DASHBOARD_TRAFFIC_BASELINE["iface"] != interface_name
+            or rx_bytes < int(DASHBOARD_TRAFFIC_BASELINE["rx"] or 0)
+            or tx_bytes < int(DASHBOARD_TRAFFIC_BASELINE["tx"] or 0)
+        )
+        if baseline_changed:
+            DASHBOARD_TRAFFIC_BASELINE.update({"date": today, "rx": rx_bytes, "tx": tx_bytes, "iface": interface_name})
+            DASHBOARD_TRAFFIC_HISTORY.clear()
+
+        download_bytes = max(0, rx_bytes - int(DASHBOARD_TRAFFIC_BASELINE["rx"] or 0))
+        upload_bytes = max(0, tx_bytes - int(DASHBOARD_TRAFFIC_BASELINE["tx"] or 0))
+        total_bytes = download_bytes + upload_bytes
+        sample = {
+            "time": now_label,
+            "upload_bytes": upload_bytes,
+            "download_bytes": download_bytes,
+            "total_bytes": total_bytes,
+        }
+        if not DASHBOARD_TRAFFIC_HISTORY or DASHBOARD_TRAFFIC_HISTORY[-1] != sample:
+            DASHBOARD_TRAFFIC_HISTORY.append(sample)
+        return {
+            "today_upload_bytes": upload_bytes,
+            "today_download_bytes": download_bytes,
+            "today_total_bytes": total_bytes,
+            "samples": list(DASHBOARD_TRAFFIC_HISTORY),
+        }
+
+
+def build_dashboard_snapshot(
+    modem: dict[str, str],
+    profiles: list[dict[str, Any]],
+    esim_enabled: bool,
+) -> dict[str, Any]:
+    sim_info = get_modem_sim_info(modem)
+    active_profile = next((profile for profile in profiles if profile.get("is_active")), None)
+    interface_name = get_active_cellular_interface()
+    ip_address = read_interface_ip(interface_name)
+    access_tech = first_dashboard_value(modem.get("modem.generic.access-technologies.value[1]"))
+    registration = first_dashboard_value(modem.get("modem.3gpp.registration-state"))
+    operator_name = first_dashboard_value(modem.get("modem.3gpp.operator-name"))
+    home_operator_name = first_dashboard_value(sim_info.get("sim.properties.operator-name"))
+    home_operator_code = first_dashboard_value(
+        sim_info.get("sim.properties.operator-code"),
+        str(sim_info.get("sim.properties.imsi", ""))[:5],
+    )
+
+    return {
+        "device": {
+            "model": first_dashboard_value(modem.get("modem.generic.model")),
+            "manufacturer": first_dashboard_value(modem.get("modem.generic.manufacturer")),
+            "imei": first_dashboard_value(modem.get("modem.generic.equipment-identifier")),
+            "iccid": first_dashboard_value(
+                active_profile.get("iccid") if active_profile else "",
+                sim_info.get("sim.properties.iccid"),
+                sim_info.get("sim.identifier"),
+            ),
+            "operator": operator_name,
+            "home_operator": home_operator_name,
+            "home_operator_code": home_operator_code,
+            "network_type": access_tech,
+            "band": find_modem_band(modem),
+            "ip_address": ip_address,
+            "interface_name": interface_name,
+            "roaming": registration == "roaming",
+            "sim_label": active_profile.get("display_name") if active_profile and esim_enabled else "普通 SIM",
+        },
+        "traffic": dashboard_traffic_snapshot(interface_name),
+    }
 
 
 def infer_apn_defaults_from_connection(apn: str, username: str = "") -> Optional[dict[str, str]]:
@@ -1504,11 +1837,42 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         status_message = "基带当前离线或正在重连，稍等片刻后再刷新。"
         errors.append(modem_error)
 
+    try:
+        dashboard = build_dashboard_snapshot(modem, profiles, esim_enabled)
+    except Exception as exc:
+        dashboard = {
+            "device": {
+                "model": "",
+                "manufacturer": "",
+                "imei": "",
+                "iccid": "",
+                "operator": "",
+                "home_operator": "",
+                "home_operator_code": "",
+                "network_type": "",
+                "band": "",
+                "ip_address": "",
+                "interface_name": "",
+                "roaming": False,
+                "sim_label": "普通 SIM" if not esim_enabled else "",
+            },
+            "traffic": {
+                "today_upload_bytes": 0,
+                "today_download_bytes": 0,
+                "today_total_bytes": 0,
+                "samples": [],
+            },
+        }
+        errors.append(f"读取仪表盘扩展状态失败：{exc}")
+
+    signal_dbm = read_modem_signal_dbm(modem)
+
     sms_messages, sms_error = list_sms()
     if sms_error:
         if not status_message:
             status_message = "暂时拿不到短信列表，可能是基带还在重新注册。"
         errors.append(sms_error)
+    sms_storage = read_sms_storage_counts(modem, len(sms_messages))
 
     try:
         keepalive = keepalive_status_snapshot(profiles)
@@ -1540,11 +1904,13 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             "registration": modem.get("modem.3gpp.registration-state", "--"),
             "state": modem.get("modem.generic.state", "--"),
             "signal": modem.get("modem.generic.signal-quality.value", "--"),
+            "signal_dbm": signal_dbm,
             "access_tech": modem.get("modem.generic.access-technologies.value[1]", "--"),
             "current_modes": modem.get("modem.generic.current-modes", "--"),
             "apn": modem.get("modem.3gpp.eps.initial-bearer.settings.apn", "--"),
             "ip_type": modem.get("modem.3gpp.eps.initial-bearer.settings.ip-type", "--"),
         },
+        "sms_storage": sms_storage,
         "connection": {
             "apn": "" if connection.get("gsm.apn", "") == "--" else connection.get("gsm.apn", ""),
             "username": "" if connection.get("gsm.username", "") == "--" else connection.get("gsm.username", ""),
@@ -1556,6 +1922,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             "ip_type": connection_defaults["ip_type"] if connection_defaults else "",
             "network_id": "" if connection.get("gsm.network-id", "") == "--" else connection.get("gsm.network-id", ""),
         },
+        "dashboard": dashboard,
         "services": {
             "modemmanager": service_state("ModemManager"),
             "sms_forwarder": service_state(SMS_FORWARDER_SERVICE),

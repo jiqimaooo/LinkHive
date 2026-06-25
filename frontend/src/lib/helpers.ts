@@ -1,4 +1,4 @@
-import type { ActionLevel, ActionName, KeepaliveRun, NotificationFormTarget, Profile, ProfileSmscFormState } from "./types"
+import type { ActionLevel, ActionName, DashboardTrafficSample, KeepaliveRun, NotificationFormTarget, Profile, ProfileSmscFormState } from "./types"
 import { NOTIFICATION_CHANNEL_DEFINITIONS, NOTIFICATION_CHANNEL_ORDER } from "./constants"
 
 export function inferRadioMode(currentModes: string) {
@@ -38,6 +38,40 @@ export function formatAccessTech(accessTech: string) {
   return labels[normalized] || accessTech.toUpperCase() || "--"
 }
 
+export function formatOperatorName(operatorName: string | null | undefined, operatorCode?: string | null) {
+  const name = String(operatorName ?? "").trim()
+  const code = String(operatorCode ?? "").trim()
+  const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, " ")
+  const codePrefix = code.slice(0, 5)
+  const labels: Record<string, string> = {
+    "china mobile": "中国移动",
+    "china mobile communications": "中国移动",
+    "cmcc": "中国移动",
+    "chn mobile": "中国移动",
+    "china unicom": "中国联通",
+    "china unicorn": "中国联通",
+    "chn unicom": "中国联通",
+    "cucc": "中国联通",
+    "china telecom": "中国电信",
+    "chn telecom": "中国电信",
+    "ctcc": "中国电信",
+  }
+  const codeLabels: Record<string, string> = {
+    "46000": "中国移动",
+    "46002": "中国移动",
+    "46004": "中国移动",
+    "46007": "中国移动",
+    "46008": "中国移动",
+    "46001": "中国联通",
+    "46006": "中国联通",
+    "46009": "中国联通",
+    "46003": "中国电信",
+    "46005": "中国电信",
+    "46011": "中国电信",
+  }
+  return labels[normalizedName] || codeLabels[codePrefix] || displayValue(name)
+}
+
 export function formatCurrentModes(currentModes: string) {
   const normalized = currentModes.trim()
   if (!normalized || normalized === "--") {
@@ -67,6 +101,53 @@ export function signalVariant(signalValue: string) {
   if (signal >= 60) return "default" as const
   if (signal >= 30) return "secondary" as const
   return "destructive" as const
+}
+
+export function displayValue(value: string | number | null | undefined, fallback = "未上报") {
+  const normalized = String(value ?? "").trim()
+  return normalized && normalized !== "--" ? normalized : fallback
+}
+
+export function formatBytes(bytes: number | null | undefined) {
+  const value = Number(bytes ?? 0)
+  if (!Number.isFinite(value) || value <= 0) return "0 B"
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  const unitIndex = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  const normalized = value / 1024 ** unitIndex
+  const digits = unitIndex <= 1 ? 0 : normalized >= 100 ? 0 : 1
+  return `${normalized.toFixed(digits)} ${units[unitIndex]}`
+}
+
+export function formatTrafficForChart(bytes: number | null | undefined) {
+  const value = Number(bytes ?? 0)
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Number((value / 1024 / 1024).toFixed(2))
+}
+
+export function normalizeTrafficSamples(samples: DashboardTrafficSample[] = []) {
+  return samples.map((sample) => ({
+    time: sample.time,
+    upload: formatTrafficForChart(sample.upload_bytes),
+    download: formatTrafficForChart(sample.download_bytes),
+    total: formatTrafficForChart(sample.total_bytes),
+  }))
+}
+
+export function serviceStateLabel(state: string) {
+  const normalized = state.trim().toLowerCase()
+  if (normalized === "active") return "运行中"
+  if (normalized === "activating" || normalized === "reloading") return "启动中"
+  if (normalized === "failed") return "异常"
+  if (normalized === "inactive" || normalized === "deactivating") return "停止"
+  return state || "未知"
+}
+
+export function serviceStateTone(state: string) {
+  const normalized = state.trim().toLowerCase()
+  if (normalized === "active") return "success" as const
+  if (normalized === "activating" || normalized === "reloading") return "warning" as const
+  if (normalized === "failed") return "danger" as const
+  return "muted" as const
 }
 
 export function keepaliveRunStateLabel(state: KeepaliveRun["state"]) {

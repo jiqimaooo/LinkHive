@@ -18,6 +18,37 @@ export type SmsItem = {
   state_label: string
 }
 
+export type DashboardTrafficSample = {
+  time: string
+  upload_bytes: number
+  download_bytes: number
+  total_bytes: number
+}
+
+export type DashboardSnapshot = {
+  device: {
+    model: string
+    manufacturer: string
+    imei: string
+    iccid: string
+    operator: string
+    home_operator?: string
+    home_operator_code?: string
+    network_type: string
+    band: string
+    ip_address: string
+    interface_name: string
+    roaming: boolean
+    sim_label: string
+  }
+  traffic: {
+    today_upload_bytes: number
+    today_download_bytes: number
+    today_total_bytes: number
+    samples: DashboardTrafficSample[]
+  }
+}
+
 export type StatusData = {
   profiles: Profile[]
   capabilities: {
@@ -35,10 +66,15 @@ export type StatusData = {
     registration: string
     state: string
     signal: string
+    signal_dbm?: string
     access_tech: string
     current_modes: string
     apn: string
     ip_type: string
+  }
+  sms_storage?: {
+    device_count: number
+    sim_count: number
   }
   connection: {
     apn: string
@@ -47,6 +83,7 @@ export type StatusData = {
     ip_type: string
     network_id: string
   }
+  dashboard?: DashboardSnapshot
   services: {
     modemmanager: string
     sms_forwarder: string
