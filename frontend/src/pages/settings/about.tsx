@@ -95,14 +95,14 @@ export default function AboutPage() {
     <div className="space-y-4">
       <PageHeader title="关于" description="LinkHive - SIM 与 eSIM 管理平台" />
 
-      <Card className="border-slate-200 bg-white max-w-lg">
+      <Card className="max-w-lg">
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <RefreshCwIcon className="size-4 text-muted-foreground" />版本信息
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex items-center justify-between rounded-xl border p-3">
+          <div className="glass-panel flex items-center justify-between rounded-xl p-3">
             <span className="text-sm text-muted-foreground">当前版本</span>
             <span className="text-sm font-mono font-medium">{currentVersion}</span>
           </div>
@@ -132,7 +132,7 @@ export default function AboutPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-slate-200 bg-white max-w-lg">
+      <Card className="max-w-lg">
         <CardHeader>
           <CardTitle className="text-base">开源与作者</CardTitle>
         </CardHeader>
@@ -141,7 +141,7 @@ export default function AboutPage() {
             href="https://github.com/jiqimaooo"
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-3 rounded-xl border p-3 hover:bg-muted/50 transition-colors"
+            className="glass-panel flex items-center gap-3 rounded-xl p-3 transition-colors hover:bg-white/70"
           >
             <img src="https://github.com/jiqimaooo.png" alt="作者头像" className="size-10 rounded-full" />
             <div>
@@ -154,7 +154,7 @@ export default function AboutPage() {
             href="https://github.com/jiqimaooo/LinkHive"
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-3 rounded-xl border p-3 hover:bg-muted/50 transition-colors"
+            className="glass-panel flex items-center gap-3 rounded-xl p-3 transition-colors hover:bg-white/70"
           >
             <div className="flex size-10 items-center justify-center rounded-full bg-[#24292f] shrink-0">
               <svg className="size-5 text-white" viewBox="0 0 24 24" fill="currentColor">

@@ -1873,6 +1873,8 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             status_message = "暂时拿不到短信列表，可能是基带还在重新注册。"
         errors.append(sms_error)
     sms_storage = read_sms_storage_counts(modem, len(sms_messages))
+    # KPI 展示以 ModemManager 当前可读取的短信列表为准，避免 ME/SM 存储计数重复相加。
+    sms_storage["readable_count"] = len(sms_messages)
 
     try:
         keepalive = keepalive_status_snapshot(profiles)

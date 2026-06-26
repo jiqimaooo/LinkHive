@@ -20,7 +20,7 @@ export function StatCard({
   className?: string
 }) {
   return (
-    <div className={cn("rounded-2xl border border-border/70 bg-background/70 p-4", className)}>
+    <div className={cn("glass-panel rounded-2xl p-4", className)}>
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Icon className="size-4" />

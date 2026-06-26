@@ -52,14 +52,14 @@ export default function ModemStatusPage() {
       />
 
       {status?.status_message || (status?.errors?.length ?? 0) > 0 ? (
-        <div className={status?.modem_available ? "rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800" : "rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-800"}>
+        <div className={status?.modem_available ? "glass-panel-warning rounded-xl p-4 text-amber-800" : "glass-panel-danger rounded-xl p-4 text-rose-800"}>
           <div className="flex items-center gap-2 font-medium"><AlertTriangleIcon className="size-4" />{status?.status_message || "设备有告警信息"}</div>
           {(status?.errors ?? []).length > 0 ? <p className="mt-1 text-sm">{status?.errors.join("；")}</p> : null}
         </div>
       ) : null}
 
       {/* 设备状态概览 */}
-      <div className="rounded-xl border border-[#e5e7eb] bg-white p-5">
+      <div className="glass-card rounded-xl p-5">
         <h3 className="text-xs font-medium text-[#64748b] mb-4">设备状态概览</h3>
         <div className="grid grid-cols-4 divide-x divide-[#f1f5f9]">
           <div className="px-4 first:pl-0 last:pr-0 flex flex-col gap-1">
@@ -91,7 +91,7 @@ export default function ModemStatusPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><RadioTowerIcon className="size-4" />基带详情</CardTitle></CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-3 text-sm">
@@ -106,7 +106,7 @@ export default function ModemStatusPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><SettingsIcon />设备控制</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <button type="button" disabled={actionBusy} onClick={() => { void runAction("recover_modem", {}, "重启基带") }} className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50">
@@ -123,7 +123,7 @@ export default function ModemStatusPage() {
 }
 
 function DetailItem({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-lg border p-2.5"><span className="text-xs text-muted-foreground">{label}</span><p className="text-sm font-medium whitespace-pre-line">{value}</p></div>
+  return <div className="glass-panel rounded-lg p-2.5"><span className="text-xs text-muted-foreground">{label}</span><p className="text-sm font-medium whitespace-pre-line">{value}</p></div>
 }
 
 function SettingsIcon({ className }: { className?: string }) {

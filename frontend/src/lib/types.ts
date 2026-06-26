@@ -75,6 +75,7 @@ export type StatusData = {
   sms_storage?: {
     device_count: number
     sim_count: number
+    readable_count?: number
   }
   connection: {
     apn: string

@@ -29,7 +29,7 @@ export default function NetworkSettingsPage() {
       <PageHeader title="网络设置" description="配置 APN、网络制式和手动选网。" />
 
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><RadioTowerIcon className="size-4 text-muted-foreground" />APN配置</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-2">
@@ -57,7 +57,7 @@ export default function NetworkSettingsPage() {
         </Card>
 
         <div className="flex flex-col gap-5">
-          <Card className="border-slate-200 bg-white">
+          <Card>
             <CardHeader><CardTitle className="text-base flex items-center gap-2"><SignalIcon className="size-4 text-muted-foreground" />网络制式</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <p className="whitespace-pre-line text-sm text-muted-foreground">{`${formatAccessTech(status?.modem.access_tech || "--")}\n${formatCurrentModes(status?.modem.current_modes || "--")}`}</p>
@@ -71,7 +71,7 @@ export default function NetworkSettingsPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-slate-200 bg-white">
+          <Card>
             <CardHeader><CardTitle className="text-base flex items-center gap-2"><RouterIcon className="size-4 text-muted-foreground" />网络选择</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">当前：{status?.connection.network_id || "自动"}</p>

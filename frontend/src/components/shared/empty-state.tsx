@@ -16,7 +16,7 @@ export function EmptyState({
 }) {
   return (
     <div className={cn(
-      "flex min-h-[18rem] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/70 bg-white/80 px-6 text-center",
+      "glass-panel flex min-h-[18rem] flex-col items-center justify-center gap-3 rounded-2xl border-dashed px-6 text-center",
       className,
     )}>
       <Icon className={cn("size-8 text-muted-foreground", spinning && "animate-spin")} />

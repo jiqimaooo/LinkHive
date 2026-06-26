@@ -65,7 +65,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-4">
-      <Card className="w-full max-w-md border-slate-200 bg-white shadow-[0_18px_60px_rgba(15,23,42,0.08)]">
+      <Card className="w-full max-w-md shadow-[0_18px_60px_rgba(15,23,42,0.08)]">
         <CardHeader className="gap-2">
           <Logo className="mb-3 size-14" />
           <CardTitle className="text-xl font-semibold">LinkHive</CardTitle>
@@ -73,7 +73,7 @@ export default function LoginPage() {
         </CardHeader>
         <CardContent>
           {countdown > 0 ? (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 flex items-center gap-3">
+            <div className="glass-panel-danger rounded-xl p-4 flex items-center gap-3">
               <BanIcon className="size-5 text-rose-600 shrink-0" />
               <div>
                 <div className="text-sm font-medium text-rose-800">尝试次数过多，IP 已被临时封禁</div>
@@ -87,7 +87,7 @@ export default function LoginPage() {
             <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); handleSubmit() }}>
               {totpRequired ? (
                 <>
-                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 flex items-center gap-3">
+                  <div className="glass-panel-selected rounded-xl p-4 flex items-center gap-3">
                     <ShieldCheckIcon className="size-5 text-blue-600 shrink-0" />
                     <div>
                       <div className="text-sm font-medium text-blue-800">需要二次认证验证码</div>

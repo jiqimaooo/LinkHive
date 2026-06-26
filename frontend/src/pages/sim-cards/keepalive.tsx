@@ -31,7 +31,7 @@ export default function KeepalivePage() {
       <PageHeader title="保活任务" description={descText} />
 
       <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <CardTitle className="text-base flex items-center gap-2"><Clock3Icon className="size-4 text-muted-foreground" />任务配置</CardTitle>
@@ -41,7 +41,7 @@ export default function KeepalivePage() {
           <CardContent className="space-y-4">
             {/* 切卡缓冲时间 - 仅 eSIM 显示 */}
             {esimEnabled ? (
-              <div className="rounded-xl border bg-white/80 p-4">
+              <div className="glass-panel rounded-xl p-4">
                 <div className="grid gap-4 md:grid-cols-[220px_1fr] md:items-end">
                   <div className="grid gap-2"><Label htmlFor="kg">切卡缓冲时间（秒）</Label><Input id="kg" type="number" min={30} max={1800} value={String(keepaliveSettings.queue_gap_seconds)} onChange={(e) => { keepaliveDirtyRef.current = true; const v = Number.parseInt(e.target.value, 10); setKeepaliveSettings(() => ({ queue_gap_seconds: Number.isNaN(v) ? 180 : v })) }} /></div>
                   <p className="text-sm text-muted-foreground">多个保活任务同时到点时会自动排队，下一次切卡会等待这里设置的缓冲时间。</p>
@@ -57,7 +57,7 @@ export default function KeepalivePage() {
                   : null
                 const isExpanded = expandedKeepaliveTaskId === task.id
                 return (
-                  <div key={task.id} className="rounded-2xl border bg-white/80 p-4 shadow-sm">
+                  <div key={task.id} className="glass-panel rounded-2xl p-4">
                     <div className="flex flex-col gap-4">
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -104,27 +104,27 @@ export default function KeepalivePage() {
           </CardContent>
         </Card>
 
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><CalendarDaysIcon className="size-4 text-muted-foreground" />调度状态</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-xl border p-4 text-center"><div className="text-sm text-muted-foreground">已启用任务</div><div className="mt-2 text-2xl font-semibold">{keepaliveEnabledCount}</div></div>
-              <div className="rounded-xl border p-4 text-center">
+              <div className="glass-panel rounded-xl p-4 text-center"><div className="text-sm text-muted-foreground">已启用任务</div><div className="mt-2 text-2xl font-semibold">{keepaliveEnabledCount}</div></div>
+              <div className="glass-panel rounded-xl p-4 text-center">
                 <div className="text-sm text-muted-foreground">{esimEnabled ? "下次可切卡" : "下次执行"}</div>
                 <div className="mt-2 text-sm font-medium">{keepalive.next_allowed_at || "当前可执行"}</div>
               </div>
             </div>
-            <div className="rounded-xl border p-4">
+            <div className="glass-panel rounded-xl p-4">
               <div className="mb-3 flex items-center justify-between gap-3"><span className="text-sm font-medium">当前执行</span>{keepalive.active_run ? <Badge variant={keepaliveRunStateVariant(keepalive.active_run.state)}>{keepaliveRunStateLabel(keepalive.active_run.state)}</Badge> : <Badge variant="outline">空闲</Badge>}</div>
               {keepalive.active_run ? <div className="space-y-2 text-sm text-muted-foreground"><div>{keepalive.active_run.label}</div><div>触发：{keepaliveTriggerLabel(keepalive.active_run.trigger)}</div>{esimEnabled ? <div>Profile：{keepalive.active_run.profile_name || "--"}</div> : null}<div>计划：{keepalive.active_run.scheduled_for_label || "--"}</div><div className="whitespace-pre-wrap text-foreground/80">{keepalive.active_run.last_message || "任务已启动..."}</div></div> : <p className="text-sm text-muted-foreground">当前没有保活任务正在执行。</p>}
             </div>
-            <div className="rounded-xl border p-4">
+            <div className="glass-panel rounded-xl p-4">
               <div className="mb-3 flex items-center justify-between gap-3"><span className="text-sm font-medium">排队中</span><Badge variant="secondary">{keepalive.queued_runs.length} 条</Badge></div>
-              {keepalive.queued_runs.length ? keepalive.queued_runs.map((r) => <div key={r.id} className="rounded-lg border p-2.5 text-sm"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{r.label}</span><Badge variant="outline">{keepaliveTriggerLabel(r.trigger)}</Badge></div><div className="mt-1 text-muted-foreground">{r.scheduled_for_label || "等待调度"}{esimEnabled ? ` · ${r.profile_name || "--"}` : ""}</div></div>) : <p className="text-sm text-muted-foreground">没有排队中的任务。</p>}
+              {keepalive.queued_runs.length ? keepalive.queued_runs.map((r) => <div key={r.id} className="glass-panel rounded-lg p-2.5 text-sm"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{r.label}</span><Badge variant="outline">{keepaliveTriggerLabel(r.trigger)}</Badge></div><div className="mt-1 text-muted-foreground">{r.scheduled_for_label || "等待调度"}{esimEnabled ? ` · ${r.profile_name || "--"}` : ""}</div></div>) : <p className="text-sm text-muted-foreground">没有排队中的任务。</p>}
             </div>
-            <div className="rounded-xl border p-4">
+            <div className="glass-panel rounded-xl p-4">
               <div className="mb-3 flex items-center justify-between gap-3"><span className="text-sm font-medium">最近记录</span><Badge variant="secondary">{keepalive.recent_runs.length} 条</Badge></div>
-              {keepalive.recent_runs.length ? keepalive.recent_runs.map((r) => <div key={r.id} className="rounded-lg border p-2.5 text-sm"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{r.label}</span><Badge variant={keepaliveRunStateVariant(r.state)}>{keepaliveRunStateLabel(r.state)}</Badge></div><div className="mt-1 text-muted-foreground">{r.updated_at || r.scheduled_for_label || "--"}{esimEnabled ? ` · ${r.profile_name || "--"}` : ""}</div><div className="mt-1 whitespace-pre-wrap text-foreground/80">{r.error || r.last_message || "暂无详情"}</div></div>) : <p className="text-sm text-muted-foreground">执行后会在这里保留最近记录。</p>}
+              {keepalive.recent_runs.length ? keepalive.recent_runs.map((r) => <div key={r.id} className="glass-panel rounded-lg p-2.5 text-sm"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{r.label}</span><Badge variant={keepaliveRunStateVariant(r.state)}>{keepaliveRunStateLabel(r.state)}</Badge></div><div className="mt-1 text-muted-foreground">{r.updated_at || r.scheduled_for_label || "--"}{esimEnabled ? ` · ${r.profile_name || "--"}` : ""}</div><div className="mt-1 whitespace-pre-wrap text-foreground/80">{r.error || r.last_message || "暂无详情"}</div></div>) : <p className="text-sm text-muted-foreground">执行后会在这里保留最近记录。</p>}
             </div>
           </CardContent>
         </Card>

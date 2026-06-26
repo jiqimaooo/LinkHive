@@ -90,7 +90,7 @@ export default function SecurityPage() {
       <div className="flex flex-col xl:flex-row gap-4">
         <div className="space-y-4 max-w-lg w-full">
           {/* 修改密码 */}
-          <Card className="border-slate-200 bg-white">
+          <Card>
         <CardHeader><CardTitle className="text-base flex items-center gap-2"><KeyRoundIcon className="size-4 text-muted-foreground" />修改账户</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2"><Label htmlFor="new-username">用户名</Label><Input id="new-username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="留空则不修改" /></div>
@@ -104,17 +104,17 @@ export default function SecurityPage() {
       </Card>
 
       {/* 二次认证 */}
-      <Card className="border-slate-200 bg-white max-w-lg">
+      <Card className="max-w-lg">
         <CardHeader><CardTitle className="text-base flex items-center gap-2"><ShieldCheckIcon className="size-4 text-muted-foreground" />二次认证{totpEnabled ? <Badge className="h-5 text-[0.688rem]">已启用</Badge> : <Badge variant="outline" className="h-5 text-[0.688rem]">未启用</Badge>}</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">基于时间的一次性密码（TOTP）。使用 Google Authenticator 等应用扫码绑定。</p>
           {totpEnabled ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="glass-panel-success rounded-xl p-4">
               <p className="text-sm font-medium text-emerald-800">已启用，登录时需要动态验证码。</p>
               <Button variant="outline" size="sm" className="mt-3" onClick={handleTotpDisable} disabled={totpLoading}>禁用二次认证</Button>
             </div>
           ) : totpSetup ? (
-            <div className="rounded-xl border p-4 space-y-4">
+            <div className="glass-panel rounded-xl p-4 space-y-4">
               <div className="text-sm font-medium">扫码绑定并验证</div>
               <div className="flex items-center gap-4">
                 <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(totpSetup.otpauth_url)}`} alt="TOTP QR" className="size-40 rounded-xl border" />
@@ -134,21 +134,21 @@ export default function SecurityPage() {
 
         <div className="max-w-lg w-full">
           {/* 防暴力破解 */}
-          <Card className="border-slate-200 bg-white">
+          <Card>
         <CardHeader><CardTitle className="text-base flex items-center gap-2"><BanIcon className="size-4 text-muted-foreground" />防暴力破解{banStatus.enabled ? <Badge className="h-5 text-[0.688rem]">已启用</Badge> : <Badge variant="outline" className="h-5 text-[0.688rem]">未启用</Badge>}</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">多次登录失败后自动封禁 IP，防止公网暴露时被暴力破解。</p>
-          <div className="flex items-center justify-between rounded-xl border p-3">
+          <div className="glass-panel flex items-center justify-between rounded-xl p-3">
             <div><div className="text-sm font-medium">启用防暴力破解</div><div className="text-xs text-muted-foreground">开启后，连续登录失败的 IP 将被自动封禁</div></div>
             <Switch checked={banEnabled} onCheckedChange={(v) => { setBanEnabled(v); saveBanSettings({ enabled: v }) }} />
           </div>
           {banEnabled ? (
             <>
-              <div className="flex items-center justify-between rounded-xl border p-3">
+              <div className="glass-panel flex items-center justify-between rounded-xl p-3">
                 <div><div className="text-sm font-medium">内网生效</div><div className="text-xs text-muted-foreground">开启后，内网 IP（192.168.x.x 等）也会被封禁。默认关闭</div></div>
                 <Switch checked={banLanEnabled} onCheckedChange={(v) => { setBanLanEnabled(v); saveBanSettings({ lan_enabled: v }) }} />
               </div>
-              <div className="rounded-xl border p-3">
+              <div className="glass-panel rounded-xl p-3">
                 <div className="text-sm font-medium mb-2">最大尝试次数</div>
                 <div className="flex items-center gap-2">
                   <Input id="ban-max" type="number" min={1} max={100} value={banMaxAttempts} onChange={(e) => setBanMaxAttempts(e.target.value)} className="w-24" />
@@ -156,13 +156,13 @@ export default function SecurityPage() {
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">24 小时内连续失败达到此次数后封禁 IP</p>
               </div>
-              <div className="rounded-xl border p-4">
+              <div className="glass-panel rounded-xl p-4">
                 <div className="text-sm font-medium mb-2">已封禁 IP（{banStatus.banned_ips.length} 个）</div>
                 {banStatus.banned_ips.length > 0 ? (
                   <ScrollArea className="max-h-48">
                     <div className="space-y-1.5">
                       {banStatus.banned_ips.map((ip) => (
-                        <div key={ip} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
+                        <div key={ip} className="glass-panel flex items-center justify-between rounded-lg px-3 py-2 text-sm">
                           <code className="text-xs">{ip}</code>
                           <Button type="button" size="xs" variant="outline" onClick={() => handleUnban(ip)} disabled={unbanLoading === ip}>
                             <Trash2Icon className="size-3" />解封

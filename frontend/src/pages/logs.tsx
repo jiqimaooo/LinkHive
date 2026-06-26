@@ -19,7 +19,7 @@ export default function LogsPage() {
         actions={<div className="flex items-center gap-2">{activeAction ? <Badge variant="outline" className="border-sky-400/40 text-sky-600">{friendlyActionName(activeAction.action)}</Badge> : <Badge variant="outline">空闲</Badge>}<Button type="button" size="sm" variant="outline" onClick={() => setLogs([])}>清空日志</Button></div>}
       />
 
-      <Card className="border-slate-200 bg-white h-[calc(100vh-16rem)] flex flex-col">
+      <Card className="h-[calc(100vh-16rem)] flex flex-col">
         <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><TerminalSquareIcon className="size-4" />执行日志<Badge variant="outline" className="ml-1">{logs.length}</Badge></CardTitle></CardHeader>
         <CardContent className="flex-1 min-h-0 pb-4">
           <ScrollArea className="h-full rounded-xl border border-slate-200 bg-slate-950/95">

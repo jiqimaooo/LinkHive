@@ -28,7 +28,7 @@ export default function SmsForwardingPage() {
       <PageHeader title="短信转发规则" description="配置短信转发通知渠道，每种渠道只保留一份。" />
 
       <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <CardTitle className="text-base flex items-center gap-2"><SendIcon className="size-4 text-muted-foreground" />通知渠道</CardTitle>
@@ -46,7 +46,7 @@ export default function SmsForwardingPage() {
               {notificationTargets.length ? notificationTargets.map((target) => {
                 const def = NOTIFICATION_CHANNEL_DEFINITIONS[target.type]
                 return (
-                  <div key={target.id} className="rounded-2xl border bg-white/80 p-4 shadow-sm">
+                  <div key={target.id} className="glass-panel rounded-2xl p-4">
                     <div className="flex flex-col gap-4">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="flex flex-col gap-2"><div className="flex items-center gap-2"><Badge variant="outline">{def.label}</Badge><Badge variant="secondary">{target.enabled ? "已启用" : "已停用"}</Badge></div><p className="text-sm text-muted-foreground">{def.description}</p></div>
@@ -81,14 +81,14 @@ export default function SmsForwardingPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-slate-200 bg-white">
+        <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><WifiIcon className="size-4 text-muted-foreground" />服务状态</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <ServiceRow name="ModemManager" state={status?.services.modemmanager || "--"} />
             <ServiceRow name="短信转发" state={status?.services.sms_forwarder || "--"} />
             <ServiceRow name="管理页面" state={status?.services.web_admin || "--"} />
             <Separator />
-            <div className="rounded-xl border p-4">
+            <div className="glass-panel rounded-xl p-4">
               <div className="flex items-center justify-between gap-3"><span className="text-sm font-medium">已配置渠道</span><Badge variant="secondary">{configuredCount} 个</Badge></div>
               <div className="mt-3">{configuredLabels.length ? <div className="flex flex-wrap gap-1.5">{configuredLabels.map((l) => <Badge key={l} variant="secondary" className="text-xs">{l}</Badge>)}</div> : <p className="text-sm text-muted-foreground">还没有已配置渠道。</p>}</div>
             </div>
@@ -101,5 +101,5 @@ export default function SmsForwardingPage() {
 }
 
 function ServiceRow({ name, state }: { name: string; state: string }) {
-  return <div className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"><span>{name}</span><Badge variant={serviceVariant(state)}>{state}</Badge></div>
+  return <div className="glass-panel flex items-center justify-between rounded-lg px-3 py-2 text-sm"><span>{name}</span><Badge variant={serviceVariant(state)}>{state}</Badge></div>
 }

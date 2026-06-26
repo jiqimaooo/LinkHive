@@ -15,7 +15,7 @@ export default function ModeSwitchPage() {
         description="切换普通 SIM 和 eSIM 工作模式。切换后相关功能会自动启用或禁用。"
       />
 
-      <Card className="border-slate-200 bg-white max-w-2xl">
+      <Card className="max-w-2xl">
         <CardHeader>
           <CardTitle className="text-base">选择工作模式</CardTitle>
         </CardHeader>
@@ -34,10 +34,10 @@ export default function ModeSwitchPage() {
                   onClick={() => { void switchSimMode(item.key) }}
                   disabled={Boolean(switchingMode) || active}
                   className={cn(
-                    "flex flex-col gap-4 rounded-2xl border p-5 text-left transition-all",
+                    "glass-panel flex flex-col gap-4 rounded-2xl p-5 text-left transition-all",
                     active
-                      ? "border-blue-300 bg-blue-50/80 ring-2 ring-blue-100"
-                      : "border-border/70 bg-white hover:border-blue-200 hover:bg-slate-50",
+                      ? "glass-panel-selected ring-2 ring-blue-100"
+                      : "hover:bg-white/70",
                     switchingMode && "opacity-60 cursor-wait",
                   )}
                 >
