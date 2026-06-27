@@ -1,4 +1,4 @@
-import type { ActionLevel, ActionName, DashboardTrafficSample, KeepaliveRun, NotificationFormTarget, Profile, ProfileSmscFormState } from "./types"
+import type { ActionLevel, ActionName, DashboardTrafficSample, DeviceStatus, KeepaliveRun, NotificationFormTarget, Profile, ProfileSmscFormState } from "./types"
 import { NOTIFICATION_CHANNEL_DEFINITIONS, NOTIFICATION_CHANNEL_ORDER } from "./constants"
 
 export function inferRadioMode(currentModes: string) {
@@ -232,6 +232,14 @@ export function getActiveProfile(profiles: Profile[]) {
   return profiles.find((profile) => profile.is_active) ?? null
 }
 
+export function getPrimaryDevice(devices: DeviceStatus[] | undefined | null) {
+  return devices?.[0] ?? null
+}
+
+export function getDeviceById(devices: DeviceStatus[] | undefined | null, deviceId: string) {
+  return devices?.find((device) => device.id === deviceId) ?? getPrimaryDevice(devices)
+}
+
 export function buildProfileSmscForms(profiles: Profile[] = []): Record<string, ProfileSmscFormState> {
   return Object.fromEntries(
     profiles.map((profile) => [
@@ -249,6 +257,7 @@ export function normalizeKeepaliveTasks(tasks: import("./types").KeepaliveTask[]
     id: task.id,
     label: task.label,
     enabled: task.enabled,
+    device_id: task.device_id || "",
     profile_iccid: task.profile_iccid,
     target_number: task.target_number,
     message: task.message,
@@ -256,14 +265,17 @@ export function normalizeKeepaliveTasks(tasks: import("./types").KeepaliveTask[]
   }))
 }
 
-export function createKeepaliveTask(profiles: Profile[]): import("./types").KeepaliveFormTask {
-  const fallbackProfile = getActiveProfile(profiles) ?? profiles[0]
+export function createKeepaliveTask(devices: DeviceStatus[] = [], profiles: Profile[] = []): import("./types").KeepaliveFormTask {
+  const fallbackDevice = devices.find((device) => device.capabilities.sms_supported) ?? devices[0]
+  const deviceProfiles = profiles.filter((profile) => !fallbackDevice?.id || profile.device_id === fallbackDevice.id)
+  const fallbackProfile = getActiveProfile(deviceProfiles) ?? deviceProfiles[0]
   const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const fallbackLabel = fallbackProfile?.display_name ? `${fallbackProfile.display_name} 保活` : "保活任务"
+  const fallbackLabel = fallbackProfile?.display_name ? `${fallbackProfile.display_name} 保活` : `${fallbackDevice?.label || "短信"} 保活`
   return {
     id: `keepalive-${randomId}`,
     label: fallbackLabel,
     enabled: true,
+    device_id: fallbackDevice?.id ?? "",
     profile_iccid: fallbackProfile?.iccid ?? "",
     target_number: "",
     message: "KEEPALIVE",

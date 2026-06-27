@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
@@ -18,11 +19,14 @@ export default function SmsInboxPage() {
   const [searchText, setSearchText] = useState("")
   const [selectedSms, setSelectedSms] = useState<string | null>(null)
   const [sendOpen, setSendOpen] = useState(false)
-  const [sendForm, setSendForm] = useState({ number: "", message: "" })
+  const [sendForm, setSendForm] = useState({ device_id: "", number: "", message: "" })
 
+  const devices = status?.devices ?? []
   const smsList = status?.sms ?? []
   const filtered = searchText.trim() ? smsList.filter((sms) => sms.number.includes(searchText) || sms.text.toLowerCase().includes(searchText.toLowerCase())) : smsList
-  const selected = smsList.find((sms) => sms.id === selectedSms) ?? null
+  const selected = smsList.find((sms) => smsKey(sms) === selectedSms) ?? null
+  const defaultDeviceId = sendForm.device_id || devices[0]?.id || ""
+  const deviceLabel = (deviceId?: string) => devices.find((device) => device.id === deviceId)?.label || "当前设备"
 
   return (
     <div className="space-y-4">
@@ -34,7 +38,7 @@ export default function SmsInboxPage() {
             <Button type="button" size="sm" onClick={() => setSendOpen(true)} disabled={actionBusy}>
               <SendIcon data-icon="inline-start" />发送短信
             </Button>
-            <Button type="button" variant="outline" size="sm" disabled={actionBusy || !smsList.length} onClick={() => { void runAction("resend_last_sms", {}, "重发最后一条短信") }}>
+            <Button type="button" variant="outline" size="sm" disabled={actionBusy || !smsList.length} onClick={() => { void runAction("resend_last_sms", { device_id: selected?.device_id || defaultDeviceId }, "重发最后一条短信") }}>
               重发最后一条
             </Button>
           </div>
@@ -53,8 +57,8 @@ export default function SmsInboxPage() {
             <ScrollArea className="glass-panel h-full rounded-xl">
               <div className="flex flex-col gap-2 p-3">
                 {filtered.length ? filtered.map((sms) => (
-                  <button key={`${sms.id}-${sms.timestamp}`} type="button" onClick={() => setSelectedSms(sms.id === selectedSms ? null : sms.id)} className={cn("glass-panel rounded-xl p-3 text-left transition-colors hover:bg-white/70", selectedSms === sms.id && "glass-panel-selected")}>
-                    <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-sm">{sms.number || "未知号码"}</span><Badge variant="secondary" className="text-xs">{sms.state_label}</Badge><Badge variant="outline" className="text-xs">{sms.timestamp}</Badge></div>
+                  <button key={smsKey(sms)} type="button" onClick={() => setSelectedSms(smsKey(sms) === selectedSms ? null : smsKey(sms))} className={cn("glass-panel rounded-xl p-3 text-left transition-colors hover:bg-white/70", selectedSms === smsKey(sms) && "glass-panel-selected")}>
+                    <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-sm">{sms.number || "未知号码"}</span><Badge variant="secondary" className="text-xs">{sms.state_label}</Badge><Badge variant="outline" className="text-xs">{deviceLabel(sms.device_id)}</Badge><Badge variant="outline" className="text-xs">{sms.timestamp}</Badge></div>
                     <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{sms.text || "空短信"}</p>
                   </button>
                 )) : <EmptyState icon={MessageSquareTextIcon} title="暂无消息" description={searchText ? "没有匹配的消息。" : "收到短信后会自动出现在这里。"} />}
@@ -69,6 +73,7 @@ export default function SmsInboxPage() {
             {selected ? (
               <div className="space-y-3">
                 <div className="glass-panel rounded-xl p-3"><div className="text-xs text-muted-foreground">发件人</div><div className="font-medium">{selected.number || "未知号码"}</div></div>
+                <div className="glass-panel rounded-xl p-3"><div className="text-xs text-muted-foreground">设备</div><div className="font-medium">{deviceLabel(selected.device_id)}</div></div>
                 <div className="glass-panel rounded-xl p-3"><div className="text-xs text-muted-foreground">状态</div><Badge variant="secondary" className="mt-1">{selected.state_label}</Badge></div>
                 <div className="glass-panel rounded-xl p-3"><div className="text-xs text-muted-foreground">时间</div><div className="text-sm">{selected.timestamp}</div></div>
                 <div className="glass-panel rounded-xl p-3"><div className="text-xs text-muted-foreground">内容</div><p className="mt-1 text-sm whitespace-pre-wrap break-words leading-6">{selected.text || "空短信"}</p></div>
@@ -85,6 +90,13 @@ export default function SmsInboxPage() {
             <DialogDescription>输入目标号码和短信内容，通过当前基带发送。</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label>发送设备</Label>
+              <Select value={defaultDeviceId} onValueChange={(value) => setSendForm((form) => ({ ...form, device_id: value ?? "" }))}>
+                <SelectTrigger><SelectValue placeholder="选择设备" /></SelectTrigger>
+                <SelectContent><SelectGroup><SelectLabel>设备</SelectLabel>{devices.map((device) => <SelectItem key={device.id} value={device.id}>{device.label}</SelectItem>)}</SelectGroup></SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-2">
               <Label htmlFor="send-number">目标号码</Label>
               <Input
@@ -110,9 +122,9 @@ export default function SmsInboxPage() {
             <Button
               disabled={actionBusy || !sendForm.number.trim() || !sendForm.message.trim()}
               onClick={() => {
-                void runAction("send_test_sms", { number: sendForm.number.trim(), message: sendForm.message }, `发送短信到 ${sendForm.number.trim()}`)
+                void runAction("send_test_sms", { device_id: defaultDeviceId, number: sendForm.number.trim(), message: sendForm.message }, `发送短信到 ${sendForm.number.trim()}`)
                 setSendOpen(false)
-                setSendForm({ number: "", message: "" })
+                setSendForm({ device_id: defaultDeviceId, number: "", message: "" })
               }}
             >
               <SendIcon data-icon="inline-start" />发送
@@ -122,4 +134,8 @@ export default function SmsInboxPage() {
       </Dialog>
     </div>
   )
+}
+
+function smsKey(sms: { id: string; device_id?: string; timestamp: string }) {
+  return `${sms.device_id || "default"}:${sms.id}:${sms.timestamp}`
 }

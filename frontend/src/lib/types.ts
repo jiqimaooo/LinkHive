@@ -7,15 +7,59 @@ export type Profile = {
   state?: string
   smsc_address?: string
   smsc_type?: string
+  device_id?: string
 }
 
 export type SmsItem = {
   id: string
+  device_id?: string
   number: string
   text: string
   timestamp: string
   state: string
   state_label: string
+}
+
+export type DeviceStatus = {
+  id: string
+  label: string
+  modem_path: string
+  modem_selector: string
+  manufacturer: string
+  model: string
+  imei: string
+  number: string
+  iccid: string
+  operator_name: string
+  operator_code: string
+  home_operator: string
+  home_operator_code: string
+  registration: string
+  state: string
+  signal: string
+  signal_dbm?: string
+  access_tech: string
+  current_modes: string
+  band: string
+  interface_name: string
+  ip_address: string
+  roaming: boolean
+  sim_label: string
+  active_sim_kind: "physical" | "esim" | "unknown" | string
+  capabilities: {
+    sms_supported: boolean
+    data_supported: boolean
+    esim_supported: boolean
+    lpac_supported: boolean
+  }
+  profiles: Profile[]
+  connection: {
+    apn: string
+    username: string
+    password?: string
+    ip_type: string
+    network_id: string
+  }
 }
 
 export type DashboardTrafficSample = {
@@ -51,6 +95,7 @@ export type DashboardSnapshot = {
 
 export type StatusData = {
   profiles: Profile[]
+  devices: DeviceStatus[]
   capabilities: {
     sim_type: string
     esim_management_enabled: boolean
@@ -126,6 +171,8 @@ export type KeepaliveTask = {
   id: string
   label: string
   enabled: boolean
+  device_id: string
+  device_label?: string
   profile_iccid: string
   profile_name: string
   target_number: string
@@ -140,6 +187,8 @@ export type KeepaliveRun = {
   id: string
   task_id: string
   label: string
+  device_id?: string
+  device_label?: string
   trigger: string
   scheduled_for: string
   scheduled_for_label: string
@@ -247,6 +296,7 @@ export type KeepaliveFormTask = {
   id: string
   label: string
   enabled: boolean
+  device_id: string
   profile_iccid: string
   target_number: string
   message: string

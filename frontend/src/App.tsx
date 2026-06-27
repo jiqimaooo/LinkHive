@@ -13,9 +13,7 @@ import DashboardPage from "@/pages/dashboard"
 import DevicesPage from "@/pages/devices"
 import SmsInboxPage from "@/pages/sms/inbox"
 import SmsForwardingPage from "@/pages/sms/forwarding"
-import ProfilesPage from "@/pages/sim-cards/profiles"
 import KeepalivePage from "@/pages/sim-cards/keepalive"
-import ModeSwitchPage from "@/pages/settings/mode"
 import SecurityPage from "@/pages/settings/security"
 import AboutPage from "@/pages/settings/about"
 import LogsPage from "@/pages/logs"
@@ -33,14 +31,17 @@ function AppLayout() {
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/devices" element={<DevicesPage />} />
+              <Route path="/devices/network" element={<DevicesPage />} />
+              <Route path="/devices/esim" element={<DevicesPage />} />
               <Route path="/sms" element={<Navigate to="/sms/inbox" replace />} />
               <Route path="/sms/inbox" element={<SmsInboxPage />} />
               <Route path="/sms/forwarding" element={<SmsForwardingPage />} />
-              <Route path="/sim-cards" element={<Navigate to="/sim-cards/profiles" replace />} />
-              <Route path="/sim-cards/profiles" element={<ProfilesPage />} />
-              <Route path="/sim-cards/keepalive" element={<KeepalivePage />} />
-              <Route path="/settings" element={<Navigate to="/settings/mode" replace />} />
-              <Route path="/settings/mode" element={<ModeSwitchPage />} />
+              <Route path="/sms/keepalive" element={<KeepalivePage />} />
+              <Route path="/sim-cards" element={<Navigate to="/devices/esim" replace />} />
+              <Route path="/sim-cards/profiles" element={<Navigate to="/devices/esim" replace />} />
+              <Route path="/sim-cards/keepalive" element={<Navigate to="/sms/keepalive" replace />} />
+              <Route path="/settings" element={<Navigate to="/settings/security" replace />} />
+              <Route path="/settings/mode" element={<Navigate to="/devices" replace />} />
               <Route path="/settings/security" element={<SecurityPage />} />
               <Route path="/settings/about" element={<AboutPage />} />
               <Route path="/logs" element={<LogsPage />} />

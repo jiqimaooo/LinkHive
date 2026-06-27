@@ -683,8 +683,8 @@ def read_at_signal_dbm(modem: dict[str, str]) -> str:
     return parse_csq_signal_dbm(first_at_response(modem, "AT+CSQ", 1.5))
 
 
-def read_modem_signal_dbm(modem: dict[str, str]) -> str:
-    result = run_command(["mmcli", "-m", "any", "--signal-get", "-K"], check=False)
+def read_modem_signal_dbm(modem: dict[str, str], device_id: str = "") -> str:
+    result = run_command(["mmcli", "-m", modem_selector_for_device_id(device_id), "--signal-get", "-K"], check=False)
     if result.returncode == 0:
         metrics = parse_mmcli_kv(result.stdout)
         access_tech = modem.get("modem.generic.access-technologies.value[1]", "--")
@@ -935,6 +935,7 @@ def next_allowed_value(sorted_values: list[int], current_value: int) -> Optional
 def parse_keepalive_task(raw_task: dict[str, Any]) -> dict[str, Any]:
     task_id = str(raw_task.get("id", "")).strip() or uuid.uuid4().hex[:12]
     label = str(raw_task.get("label", "")).strip()
+    device_id = str(raw_task.get("device_id", "")).strip()
     profile_iccid = str(raw_task.get("profile_iccid", "")).strip()
     target_number = str(raw_task.get("target_number", "")).strip()
     message = str(raw_task.get("message", "")).strip()
@@ -947,10 +948,10 @@ def parse_keepalive_task(raw_task: dict[str, Any]) -> dict[str, Any]:
     if not cron_expression:
         weekdays = normalize_weekdays(raw_task.get("days_of_week", []))
         cron_expression = legacy_keepalive_cron(raw_task.get("time", ""), weekdays)
+    if "device_id" not in raw_task and enabled:
+        enabled = False
     if not label:
         raise ValueError("保活任务名称不能为空")
-    if not profile_iccid and esim_management_enabled():
-        raise ValueError(f"保活任务 {label} 缺少 Profile")
     if not target_number:
         raise ValueError(f"保活任务 {label} 缺少目标手机号")
     if not message:
@@ -959,6 +960,7 @@ def parse_keepalive_task(raw_task: dict[str, Any]) -> dict[str, Any]:
         "id": task_id,
         "label": label,
         "enabled": enabled,
+        "device_id": device_id,
         "profile_iccid": profile_iccid,
         "target_number": target_number,
         "message": message,
@@ -1112,6 +1114,8 @@ def describe_keepalive_record(record: dict[str, Any]) -> dict[str, Any]:
         "id": record.get("id", ""),
         "task_id": metadata.get("task_id", ""),
         "label": metadata.get("label", "") or "保活任务",
+        "device_id": metadata.get("device_id", ""),
+        "device_label": metadata.get("device_label", ""),
         "trigger": metadata.get("trigger", "manual"),
         "scheduled_for": scheduled_for,
         "scheduled_for_label": format_beijing_timestamp(scheduled_for) if scheduled_for else "",
@@ -1126,22 +1130,25 @@ def describe_keepalive_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def keepalive_status_snapshot(profiles: list[dict[str, Any]]) -> dict[str, Any]:
+def keepalive_status_snapshot(profiles: list[dict[str, Any]], devices: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
     now = datetime.now(BEIJING_TZ)
     settings, tasks = load_keepalive_config()
     profile_map = {str(profile.get("iccid", "")).strip(): profile for profile in profiles}
+    device_map = {str(device.get("id", "")).strip(): device for device in (devices or [])}
 
     task_views: list[dict[str, Any]] = []
     for task in tasks:
         next_run = next_keepalive_run(task, now)
         profile = profile_map.get(task["profile_iccid"], {})
+        device = device_map.get(task.get("device_id", ""), {})
         task_views.append(
             {
                 **task,
+                "device_label": str(device.get("label", "")).strip(),
                 "profile_name": (
                     str(profile.get("display_name", "")).strip()
                     if profile
-                    else profile_name_for_iccid(task["profile_iccid"], profiles)
+                    else profile_name_for_iccid(task["profile_iccid"], profiles) if task.get("profile_iccid") else ""
                 ),
                 "schedule_label": task["cron_expression"],
                 "next_run": next_run.isoformat() if next_run else "",
@@ -1378,16 +1385,76 @@ def get_profile_by_iccid(iccid: str) -> dict[str, Any]:
     return next((profile for profile in profiles if str(profile.get("iccid")) == iccid), {})
 
 
-def get_modem_info() -> tuple[dict[str, str], Optional[str]]:
-    result = run_command(["mmcli", "-m", "any", "-K"], check=False)
+def modem_id_from_path(path: str) -> str:
+    match = re.search(r"/Modem/(\d+)$", str(path or "").strip())
+    return match.group(1) if match else str(path or "").strip()
+
+
+def list_modem_paths() -> list[str]:
+    result = run_command(["mmcli", "-L"], check=False)
+    if result.returncode != 0:
+        return []
+    return re.findall(r"(/org/freedesktop/ModemManager1/Modem/\d+)", result.stdout)
+
+
+def modem_selector_for_device_id(device_id: str = "") -> str:
+    target = str(device_id or "").strip()
+    if not target:
+        return "any"
+    for modem, _error in enumerate_modem_infos():
+        if modem_device_id(modem) == target:
+            return str(modem.get("linkhive.modem_selector") or "any")
+    return target.removeprefix("modem-") if target.startswith("modem-") else target
+
+
+def get_modem_info(device_id: str = "") -> tuple[dict[str, str], Optional[str]]:
+    selector = modem_selector_for_device_id(device_id)
+    result = run_command(["mmcli", "-m", selector, "-K"], check=False)
     if result.returncode != 0:
         error = command_output_text(result) or "无法读取基带状态"
         return {}, error
-    return parse_mmcli_kv(result.stdout), None
+    modem = parse_mmcli_kv(result.stdout)
+    if selector != "any":
+        modem["linkhive.modem_selector"] = selector
+        modem["linkhive.modem_path"] = f"/org/freedesktop/ModemManager1/Modem/{selector}" if selector.isdigit() else selector
+    return modem, None
 
 
-def list_sms() -> tuple[list[dict[str, str]], Optional[str]]:
-    result = run_command(["mmcli", "-m", "any", "--messaging-list-sms"], check=False)
+def enumerate_modem_infos() -> list[tuple[dict[str, str], Optional[str]]]:
+    modem_paths = list_modem_paths()
+    if not modem_paths:
+        modem, error = get_modem_info("")
+        return [(modem, error)] if modem or error else []
+
+    items: list[tuple[dict[str, str], Optional[str]]] = []
+    for modem_path in modem_paths:
+        selector = modem_id_from_path(modem_path)
+        result = run_command(["mmcli", "-m", selector, "-K"], check=False)
+        if result.returncode != 0:
+            items.append(({}, command_output_text(result) or f"无法读取基带 {selector}"))
+            continue
+        modem = parse_mmcli_kv(result.stdout)
+        modem["linkhive.modem_path"] = modem_path
+        modem["linkhive.modem_selector"] = selector
+        items.append((modem, None))
+    return items
+
+
+def modem_device_id(modem: dict[str, str]) -> str:
+    imei = first_dashboard_value(modem.get("modem.generic.equipment-identifier"))
+    if imei:
+        return f"imei-{imei}"
+    selector = first_dashboard_value(modem.get("linkhive.modem_selector"))
+    if selector:
+        return f"modem-{selector}"
+    modem_path = first_dashboard_value(modem.get("linkhive.modem_path"))
+    modem_id = modem_id_from_path(modem_path)
+    return f"modem-{modem_id}" if modem_id else "modem-any"
+
+
+def list_sms(device_id: str = "") -> tuple[list[dict[str, str]], Optional[str]]:
+    selector = modem_selector_for_device_id(device_id)
+    result = run_command(["mmcli", "-m", selector, "--messaging-list-sms"], check=False)
     if result.returncode != 0:
         error = command_output_text(result) or "无法读取短信列表"
         return [], error
@@ -1408,6 +1475,7 @@ def list_sms() -> tuple[list[dict[str, str]], Optional[str]]:
                 "text": normalize_sms_text(kv.get("sms.content.text", "") or kv.get("sms.content.data", "")),
                 "timestamp": format_beijing_timestamp(kv.get("sms.properties.timestamp", "")),
                 "state": state,
+                "device_id": device_id,
                 "state_label": {
                     "received": "已接收",
                     "receiving": "接收中",
@@ -1468,8 +1536,9 @@ def parse_sms_paths(raw: str) -> list[str]:
     return re.findall(r"(/org/freedesktop/ModemManager1/SMS/\d+)", raw)
 
 
-def get_latest_sms_detail() -> dict[str, str]:
-    result = run_command(["mmcli", "-m", "any", "--messaging-list-sms"], check=False)
+def get_latest_sms_detail(device_id: str = "") -> dict[str, str]:
+    selector = modem_selector_for_device_id(device_id)
+    result = run_command(["mmcli", "-m", selector, "--messaging-list-sms"], check=False)
     if result.returncode != 0:
         raise RuntimeError(command_output_text(result) or "无法读取短信列表")
 
@@ -1488,6 +1557,7 @@ def get_latest_sms_detail() -> dict[str, str]:
     kv = parse_mmcli_kv(detail.stdout)
     return {
         "path": latest_path,
+        "device_id": device_id,
         "state": kv.get("sms.properties.state", ""),
         "number": kv.get("sms.content.number", ""),
         "text": normalize_sms_text(kv.get("sms.content.text", "") or kv.get("sms.content.data", "")),
@@ -1665,6 +1735,112 @@ def build_dashboard_snapshot(
     }
 
 
+def profile_device_id(profile: dict[str, Any], fallback_device_id: str = "") -> str:
+    return str(profile.get("device_id") or profile.get("modem_device_id") or fallback_device_id or "").strip()
+
+
+def attach_profile_device_id(profiles: list[dict[str, Any]], device_id: str) -> list[dict[str, Any]]:
+    return [{**profile, "device_id": profile_device_id(profile, device_id)} for profile in profiles]
+
+
+def build_device_status(
+    modem: dict[str, str],
+    *,
+    profiles: list[dict[str, Any]],
+    lpac_installed: bool,
+    primary_device_id: str,
+) -> dict[str, Any]:
+    device_id = modem_device_id(modem)
+    sim_info = get_modem_sim_info(modem)
+    device_profiles = [profile for profile in profiles if profile_device_id(profile, primary_device_id) == device_id]
+    active_profile = next((profile for profile in device_profiles if profile.get("is_active")), None)
+    interface_name = get_active_cellular_interface()
+    registration = first_dashboard_value(modem.get("modem.3gpp.registration-state"))
+    iccid = first_dashboard_value(
+        active_profile.get("iccid") if active_profile else "",
+        sim_info.get("sim.properties.iccid"),
+        sim_info.get("sim.identifier"),
+    )
+    esim_supported = bool(lpac_installed and (device_profiles or device_id == primary_device_id))
+    active_sim_kind = "esim" if active_profile and active_profile.get("iccid") == iccid else ("unknown" if esim_supported else "physical")
+    signal_dbm = read_modem_signal_dbm(modem, device_id)
+
+    return {
+        "id": device_id,
+        "label": " ".join(
+            part
+            for part in [
+                first_dashboard_value(modem.get("modem.generic.manufacturer")),
+                first_dashboard_value(modem.get("modem.generic.model")),
+            ]
+            if part
+        )
+        or device_id,
+        "modem_path": first_dashboard_value(modem.get("linkhive.modem_path")),
+        "modem_selector": first_dashboard_value(modem.get("linkhive.modem_selector")),
+        "manufacturer": first_dashboard_value(modem.get("modem.generic.manufacturer")),
+        "model": first_dashboard_value(modem.get("modem.generic.model")),
+        "imei": first_dashboard_value(modem.get("modem.generic.equipment-identifier")),
+        "number": first_dashboard_value(modem.get("modem.generic.own-numbers.value[1]")),
+        "iccid": iccid,
+        "operator_name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
+        "operator_code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
+        "home_operator": first_dashboard_value(sim_info.get("sim.properties.operator-name")),
+        "home_operator_code": first_dashboard_value(
+            sim_info.get("sim.properties.operator-code"),
+            str(sim_info.get("sim.properties.imsi", ""))[:5],
+        ),
+        "registration": registration,
+        "state": first_dashboard_value(modem.get("modem.generic.state")),
+        "signal": first_dashboard_value(modem.get("modem.generic.signal-quality.value")),
+        "signal_dbm": signal_dbm,
+        "access_tech": first_dashboard_value(modem.get("modem.generic.access-technologies.value[1]")),
+        "current_modes": first_dashboard_value(modem.get("modem.generic.current-modes")),
+        "band": find_modem_band(modem),
+        "interface_name": interface_name,
+        "ip_address": read_interface_ip(interface_name),
+        "roaming": registration == "roaming",
+        "sim_label": active_profile.get("display_name") if active_profile else ("普通 SIM" if active_sim_kind == "physical" else "SIM 类型未确认"),
+        "active_sim_kind": active_sim_kind,
+        "capabilities": {
+            "sms_supported": True,
+            "data_supported": True,
+            "esim_supported": esim_supported,
+            "lpac_supported": lpac_installed,
+        },
+        "profiles": device_profiles,
+        "connection": {
+            "apn": "",
+            "username": "",
+            "password": "",
+            "ip_type": "",
+            "network_id": "",
+        },
+    }
+
+
+def build_devices_snapshot(profiles: list[dict[str, Any]], lpac_installed: bool) -> list[dict[str, Any]]:
+    modem_items = [(modem, error) for modem, error in enumerate_modem_infos() if modem and not error]
+    if not modem_items:
+        return []
+    primary_device_id = modem_device_id(modem_items[0][0])
+    return [
+        build_device_status(modem, profiles=profiles, lpac_installed=lpac_installed, primary_device_id=primary_device_id)
+        for modem, _error in modem_items
+    ]
+
+
+def device_status_for_id(device_id: str = "") -> dict[str, Any]:
+    cached_profiles, _cache_error = get_cached_profiles()
+    devices = build_devices_snapshot(cached_profiles, os.path.exists("/opt/lpac/lpac"))
+    if not devices:
+        return {}
+    target = str(device_id or "").strip()
+    if target:
+        return next((device for device in devices if device.get("id") == target), devices[0])
+    return devices[0]
+
+
 def infer_apn_defaults_from_connection(apn: str, username: str = "") -> Optional[dict[str, str]]:
     for value in PROFILE_APN_DEFAULTS.values():
         if value["apn"] == apn and (not value["username"] or value["username"] == username):
@@ -1685,13 +1861,14 @@ def modem_network_ready(modem: dict[str, str]) -> bool:
 def wait_for_modem_network_ready(
     ctx: ActionContext,
     *,
+    device_id: str = "",
     timeout_seconds: int = KEEPALIVE_NETWORK_WAIT_SECONDS,
     poll_seconds: int = KEEPALIVE_NETWORK_POLL_SECONDS,
 ) -> tuple[bool, str]:
     deadline = time.time() + timeout_seconds
     last_state = ""
     while time.time() < deadline:
-        modem, modem_error = get_modem_info()
+        modem, modem_error = get_modem_info(device_id)
         if modem_error:
             current_state = f"error:{modem_error}"
             if current_state != last_state:
@@ -1719,14 +1896,14 @@ def escape_mmcli_sms_value(value: str) -> str:
     return f"'{escaped}'"
 
 
-def create_sms(ctx: ActionContext, number: str, text: str) -> str:
+def create_sms(ctx: ActionContext, number: str, text: str, device_id: str = "") -> str:
     request_arg = (
         "--messaging-create-sms="
         f"number={escape_mmcli_sms_value(number)},text={escape_mmcli_sms_value(text)}"
     )
     result = run_logged_command(
         ctx,
-        ["mmcli", "-m", "any", request_arg],
+        ["mmcli", "-m", modem_selector_for_device_id(device_id), request_arg],
         failure_prefix="创建短信对象失败：",
     )
     match = re.search(r"(/org/freedesktop/ModemManager1/SMS/\d+)", result.stdout or result.stderr or "")
@@ -1737,12 +1914,12 @@ def create_sms(ctx: ActionContext, number: str, text: str) -> str:
     return sms_path
 
 
-def delete_sms(ctx: ActionContext, sms_path: str) -> None:
+def delete_sms(ctx: ActionContext, sms_path: str, device_id: str = "") -> None:
     if not sms_path:
         return
     run_logged_command(
         ctx,
-        ["mmcli", "-m", "any", f"--messaging-delete-sms={sms_path}"],
+        ["mmcli", "-m", modem_selector_for_device_id(device_id), f"--messaging-delete-sms={sms_path}"],
         check=False,
     )
 
@@ -1752,10 +1929,11 @@ def send_sms_message(
     number: str,
     text: str,
     *,
+    device_id: str = "",
     success_message: str,
     failure_prefix: str,
 ) -> None:
-    sms_path = create_sms(ctx, number, text)
+    sms_path = create_sms(ctx, number, text, device_id)
     try:
         run_logged_command(
             ctx,
@@ -1764,14 +1942,15 @@ def send_sms_message(
             success_message=success_message,
         )
     finally:
-        delete_sms(ctx, sms_path)
+        delete_sms(ctx, sms_path, device_id)
 
 
-def send_keepalive_sms(ctx: ActionContext, number: str, text: str) -> None:
+def send_keepalive_sms(ctx: ActionContext, number: str, text: str, device_id: str = "") -> None:
     send_sms_message(
         ctx,
         number,
         text,
+        device_id=device_id,
         success_message="保活短信已发送",
         failure_prefix="发送保活短信失败：",
     )
@@ -1846,7 +2025,8 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
     notification_config = read_env_config(NOTIFICATION_CONFIG_PATH)
     notification_targets = load_notification_targets(notification_config)
     configured_targets = configured_notification_targets(notification_targets)
-    esim_enabled = esim_management_enabled()
+    lpac_installed = os.path.exists("/opt/lpac/lpac")
+    esim_enabled = False
     current_sim_type = sim_type()
     connection = get_connection_info()
     connection_defaults = infer_apn_defaults_from_connection(
@@ -1854,7 +2034,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         "" if connection.get("gsm.username", "") == "--" else connection.get("gsm.username", ""),
     )
 
-    if esim_enabled:
+    if lpac_installed:
         try:
             profiles = refresh_profile_cache(force=True) if refresh_profiles else get_cached_profiles()[0]
             if not profiles and not refresh_profiles:
@@ -1877,6 +2057,13 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
     if modem_error:
         status_message = "基带当前离线或正在重连，稍等片刻后再刷新。"
         errors.append(modem_error)
+
+    primary_device_id = modem_device_id(modem) if modem else ""
+    profiles = attach_profile_device_id(profiles, primary_device_id)
+    devices = build_devices_snapshot(profiles, lpac_installed)
+    esim_enabled = any(device.get("capabilities", {}).get("esim_supported") for device in devices)
+    if devices:
+        current_sim_type = str(devices[0].get("active_sim_kind") or current_sim_type)
 
     try:
         dashboard = build_dashboard_snapshot(modem, profiles, esim_enabled)
@@ -1913,17 +2100,30 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
     except Exception:
         ims_status = {"ims_supported": False, "volte_enabled": False, "vowifi_enabled": False}
 
-    sms_messages, sms_error = list_sms()
-    if sms_error:
+    sms_messages: list[dict[str, str]] = []
+    sms_errors: list[str] = []
+    if devices:
+        for device in devices:
+            device_messages, sms_error = list_sms(str(device.get("id", "")))
+            if sms_error:
+                sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
+                continue
+            sms_messages.extend(device_messages)
+    else:
+        sms_messages, sms_error = list_sms()
+        if sms_error:
+            sms_errors.append(sms_error)
+    if sms_errors:
         if not status_message:
-            status_message = "暂时拿不到短信列表，可能是基带还在重新注册。"
-        errors.append(sms_error)
+            status_message = "暂时拿不到部分短信列表，可能是基带还在重新注册。"
+        errors.extend(sms_errors)
+    sms_messages.sort(key=lambda item: int(item.get("id") or "0"), reverse=True)
     sms_storage = read_sms_storage_counts(modem, len(sms_messages))
     # KPI 展示以 ModemManager 当前可读取的短信列表为准，避免 ME/SM 存储计数重复相加。
     sms_storage["readable_count"] = len(sms_messages)
 
     try:
-        keepalive = keepalive_status_snapshot(profiles)
+        keepalive = keepalive_status_snapshot(profiles, devices)
     except Exception as exc:
         keepalive = {
             "settings": normalize_keepalive_settings({}),
@@ -1935,12 +2135,27 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         }
         errors.append(f"读取保活配置失败：{exc}")
 
+    connection_payload = {
+        "apn": "" if connection.get("gsm.apn", "") == "--" else connection.get("gsm.apn", ""),
+        "username": "" if connection.get("gsm.username", "") == "--" else connection.get("gsm.username", ""),
+        "password": (
+            ""
+            if connection.get("gsm.password", "") in {"--", "<hidden>"}
+            else connection.get("gsm.password", "")
+        ),
+        "ip_type": connection_defaults["ip_type"] if connection_defaults else "",
+        "network_id": "" if connection.get("gsm.network-id", "") == "--" else connection.get("gsm.network-id", ""),
+    }
+    if devices:
+        devices[0]["connection"] = connection_payload
+
     return {
         "profiles": profiles,
+        "devices": devices,
         "capabilities": {
             "sim_type": current_sim_type,
             "esim_management_enabled": esim_enabled,
-            "lpac_installed": os.path.exists("/opt/lpac/lpac"),
+            "lpac_installed": lpac_installed,
         },
         "modem_available": not modem_error,
         "status_message": status_message,
@@ -1964,17 +2179,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             "vowifi_supported": ims_status.get("vowifi_supported", False),
         },
         "sms_storage": sms_storage,
-        "connection": {
-            "apn": "" if connection.get("gsm.apn", "") == "--" else connection.get("gsm.apn", ""),
-            "username": "" if connection.get("gsm.username", "") == "--" else connection.get("gsm.username", ""),
-            "password": (
-                ""
-                if connection.get("gsm.password", "") in {"--", "<hidden>"}
-                else connection.get("gsm.password", "")
-            ),
-            "ip_type": connection_defaults["ip_type"] if connection_defaults else "",
-            "network_id": "" if connection.get("gsm.network-id", "") == "--" else connection.get("gsm.network-id", ""),
-        },
+        "connection": connection_payload,
         "dashboard": dashboard,
         "services": {
             "modemmanager": service_state("ModemManager"),
@@ -2067,7 +2272,8 @@ def run_logged_command(
     return result
 
 
-def recover_modem(ctx: ActionContext) -> None:
+def recover_modem(ctx: ActionContext, payload: Optional[dict[str, Any]] = None) -> None:
+    device_id = str((payload or {}).get("device_id", "")).strip()
     ctx.log("开始恢复基带")
     qmi_device: Optional[str] = None
     try:
@@ -2105,7 +2311,7 @@ def recover_modem(ctx: ActionContext) -> None:
             success_message="短信转发服务已尝试重启",
         )
 
-    modem, modem_error = get_modem_info()
+    modem, modem_error = get_modem_info(device_id)
     if modem_error:
         ctx.log(f"当前还无法读取基带状态：{modem_error}", "warning")
     else:
@@ -2118,6 +2324,7 @@ def recover_modem(ctx: ActionContext) -> None:
 
 
 def apply_apn_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
     apn = str(payload.get("apn", "")).strip()
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", "")).strip()
@@ -2134,7 +2341,7 @@ def apply_apn_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
     ctx.log("开始保存 APN 配置")
     mm = run_logged_command(
         ctx,
-        ["mmcli", "-m", "any", f"--3gpp-set-initial-eps-bearer-settings={','.join(settings_parts)}"],
+        ["mmcli", "-m", modem_selector_for_device_id(device_id), f"--3gpp-set-initial-eps-bearer-settings={','.join(settings_parts)}"],
         check=False,
     )
     if mm.returncode == 0:
@@ -2167,8 +2374,10 @@ def apply_apn_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
 
 
 def switch_profile(ctx: ActionContext, payload: dict[str, Any], *, schedule_gap_after: bool = True) -> None:
-    if not esim_management_enabled():
-        raise RuntimeError("当前为普通 SIM 模式，eSIM 管理功能已禁用")
+    device_id = str(payload.get("device_id", "")).strip()
+    device = device_status_for_id(device_id)
+    if not device.get("capabilities", {}).get("esim_supported"):
+        raise RuntimeError("目标设备不支持 eSIM 管理")
 
     iccid = str(payload.get("iccid", "")).strip()
     if not iccid:
@@ -2193,14 +2402,14 @@ def switch_profile(ctx: ActionContext, payload: dict[str, Any], *, schedule_gap_
     if payload_json.get("message"):
         ctx.log(str(payload_json["message"]))
     ctx.log("切卡命令已下发，继续恢复基带")
-    recover_modem(ctx)
+    recover_modem(ctx, {"device_id": device_id})
     try:
         refresh_profile_cache(force=True)
         ctx.log("eSIM Profiles 缓存已更新")
     except Exception as exc:
         ctx.log(f"刷新 eSIM Profiles 缓存失败：{exc}", "warning")
     try:
-        if apply_profile_smsc_if_configured(ctx, iccid):
+        if apply_profile_smsc_if_configured(ctx, iccid, device_id=device_id):
             ctx.log(f"{profile_name} 的短信中心已自动恢复")
         else:
             ctx.log(f"{profile_name} 未配置短信中心恢复规则，已跳过")
@@ -2287,9 +2496,10 @@ def restart_sms_service(ctx: ActionContext) -> None:
     )
 
 
-def resend_last_sms(ctx: ActionContext) -> None:
+def resend_last_sms(ctx: ActionContext, payload: Optional[dict[str, Any]] = None) -> None:
+    device_id = str((payload or {}).get("device_id", "")).strip()
     ctx.log("开始读取最后一条短信")
-    detail = get_latest_sms_detail()
+    detail = get_latest_sms_detail(device_id)
     ctx.log(f"短信来源：{detail.get('number') or 'unknown'}")
     ctx.log(f"短信时间：{detail.get('timestamp') or '未知时间'}")
     for line in (detail.get("text") or "(empty)").splitlines():
@@ -2308,6 +2518,7 @@ def resend_last_sms(ctx: ActionContext) -> None:
 
 
 def send_test_sms(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
     number = str(payload.get("number", "")).strip()
     message = str(payload.get("message", "")).strip()
     if not number:
@@ -2316,16 +2527,17 @@ def send_test_sms(ctx: ActionContext, payload: dict[str, Any]) -> None:
         raise ValueError("缺少测试短信内容")
 
     ctx.log(f"开始发送测试短信到：{number}")
-    if esim_management_enabled():
+    device = device_status_for_id(device_id)
+    if device.get("capabilities", {}).get("esim_supported"):
         profiles = refresh_profile_cache(force=True)
         active_profile = active_profile_from_list(profiles)
         active_iccid = str(active_profile.get("iccid", "")).strip()
         if active_iccid:
-            if apply_profile_smsc_if_configured(ctx, active_iccid):
+            if apply_profile_smsc_if_configured(ctx, active_iccid, device_id=device_id):
                 ctx.log("已按当前 Profile 自动应用短信中心")
             else:
                 ctx.log("当前 Profile 未配置短信中心，继续按基带现有配置发送")
-    ready, detail = wait_for_modem_network_ready(ctx, timeout_seconds=45, poll_seconds=5)
+    ready, detail = wait_for_modem_network_ready(ctx, device_id=device_id, timeout_seconds=45, poll_seconds=5)
     if not ready:
         raise RuntimeError(detail)
 
@@ -2336,15 +2548,16 @@ def send_test_sms(ctx: ActionContext, payload: dict[str, Any]) -> None:
         ctx,
         number,
         message,
+        device_id=device_id,
         success_message="测试短信已发送",
         failure_prefix="发送测试短信失败：",
     )
 
 
-def query_current_smsc(ctx: ActionContext) -> Optional[tuple[str, str]]:
+def query_current_smsc(ctx: ActionContext, device_id: str = "") -> Optional[tuple[str, str]]:
     result = run_logged_command(
         ctx,
-        ["mmcli", "-m", "any", "--command=AT+CSCA?"],
+        ["mmcli", "-m", modem_selector_for_device_id(device_id), "--command=AT+CSCA?"],
         check=False,
     )
     if result.returncode != 0:
@@ -2362,10 +2575,10 @@ def smsc_matches_target(current: Optional[tuple[str, str]], target_address: str,
     return normalize_smsc_address(current[0]) == target_address and normalize_smsc_type(current[1]) == target_type
 
 
-def apply_smsc_value(ctx: ActionContext, smsc_address: str, smsc_type: str) -> None:
+def apply_smsc_value(ctx: ActionContext, smsc_address: str, smsc_type: str, device_id: str = "") -> None:
     address = normalize_smsc_address(smsc_address)
     smsc_kind = normalize_smsc_type(smsc_type)
-    current_before = query_current_smsc(ctx)
+    current_before = query_current_smsc(ctx, device_id)
     if smsc_matches_target(current_before, address, smsc_kind):
         ctx.log(f"当前短信中心已是目标值：{address},{smsc_kind}，跳过重复写入")
         return
@@ -2373,10 +2586,10 @@ def apply_smsc_value(ctx: ActionContext, smsc_address: str, smsc_type: str) -> N
     ctx.log(f"准备应用短信中心：{address},{smsc_kind}")
     result = run_logged_command(
         ctx,
-        ["mmcli", "-m", "any", f'--command=AT+CSCA="{address}",{smsc_kind}'],
+        ["mmcli", "-m", modem_selector_for_device_id(device_id), f'--command=AT+CSCA="{address}",{smsc_kind}'],
         check=False,
     )
-    queried = query_current_smsc(ctx)
+    queried = query_current_smsc(ctx, device_id)
     if result.returncode != 0:
         error_text = command_output_text(result) or "未知错误"
         if smsc_matches_target(queried, address, smsc_kind):
@@ -2396,16 +2609,17 @@ def apply_smsc_value(ctx: ActionContext, smsc_address: str, smsc_type: str) -> N
         ctx.log("未能回读当前短信中心，可能是基带未返回标准文本", "warning")
 
 
-def apply_profile_smsc_if_configured(ctx: ActionContext, iccid: str) -> bool:
+def apply_profile_smsc_if_configured(ctx: ActionContext, iccid: str, device_id: str = "") -> bool:
     smsc_mapping = load_profile_smsc_config()
     item = smsc_mapping.get(str(iccid or "").strip())
     if not item:
         return False
-    apply_smsc_value(ctx, item["address"], item["type"])
+    apply_smsc_value(ctx, item["address"], item["type"], device_id)
     return True
 
 
 def save_profile_smsc(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
     iccid = str(payload.get("iccid", "")).strip()
     smsc_address = normalize_smsc_address(payload.get("smsc_address", ""))
     smsc_type = normalize_smsc_type(payload.get("smsc_type", "145"))
@@ -2431,7 +2645,7 @@ def save_profile_smsc(ctx: ActionContext, payload: dict[str, Any]) -> None:
     active_profile = active_profile_from_list(profiles)
     active_iccid = str(active_profile.get("iccid", "")).strip()
     if apply_now and active_iccid == iccid:
-        apply_smsc_value(ctx, smsc_address, smsc_type)
+        apply_smsc_value(ctx, smsc_address, smsc_type, device_id)
         return
     if active_iccid == iccid:
         ctx.log("当前 Profile 正在使用，短信中心已保存，下次切卡后会自动重新应用")
@@ -2440,14 +2654,16 @@ def save_profile_smsc(ctx: ActionContext, payload: dict[str, Any]) -> None:
 
 
 def apply_radio_mode(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
+    selector = modem_selector_for_device_id(device_id)
     mode = str(payload.get("mode", "")).strip()
     commands = {
-        "4g_only": (["mmcli", "-m", "any", "--set-allowed-modes=4g"], "仅 4G"),
+        "4g_only": (["mmcli", "-m", selector, "--set-allowed-modes=4g"], "仅 4G"),
         "3g4g_prefer4g": (
-            ["mmcli", "-m", "any", "--set-allowed-modes=3g|4g", "--set-preferred-mode=4g"],
+            ["mmcli", "-m", selector, "--set-allowed-modes=3g|4g", "--set-preferred-mode=4g"],
             "3G/4G，优先 4G",
         ),
-        "3g_only": (["mmcli", "-m", "any", "--set-allowed-modes=3g"], "仅 3G"),
+        "3g_only": (["mmcli", "-m", selector, "--set-allowed-modes=3g"], "仅 3G"),
     }
     if mode not in commands:
         raise ValueError("不支持的制式选项")
@@ -2457,6 +2673,7 @@ def apply_radio_mode(ctx: ActionContext, payload: dict[str, Any]) -> None:
 
 
 def apply_network_selection(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
     operator_code = str(payload.get("operator_code", "")).strip()
     run_logged_command(
         ctx,
@@ -2467,16 +2684,16 @@ def apply_network_selection(ctx: ActionContext, payload: dict[str, Any]) -> None
 
     if not operator_code:
         ctx.log("已切回自动选网")
-        recover_modem(ctx)
+        recover_modem(ctx, {"device_id": device_id})
         return
 
     run_logged_command(
         ctx,
-        ["mmcli", "-m", "any", f"--3gpp-register-in-operator={operator_code}"],
+        ["mmcli", "-m", modem_selector_for_device_id(device_id), f"--3gpp-register-in-operator={operator_code}"],
         check=False,
     )
     ctx.sleep(5, "等待手动选网结果")
-    modem, modem_error = get_modem_info()
+    modem, modem_error = get_modem_info(device_id)
     if modem_error:
         ctx.log(f"当前无法读取注册状态：{modem_error}", "warning")
         return
@@ -2490,10 +2707,11 @@ def apply_network_selection(ctx: ActionContext, payload: dict[str, Any]) -> None
 
 def apply_ims_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
     """Enable/disable VoLTE and VoWiFi via AT commands."""
+    device_id = str(payload.get("device_id", "")).strip()
     volte = payload.get("volte_enabled")
     vowifi = payload.get("vowifi_enabled")
 
-    modem, modem_error = get_modem_info()
+    modem, modem_error = get_modem_info(device_id)
     if modem_error:
         raise RuntimeError(f"无法读取基带信息：{modem_error}")
 
@@ -2549,7 +2767,7 @@ def apply_ims_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
         run_logged_command(ctx, ["systemctl", "restart", "ModemManager"], check=False, success_message="ModemManager 已重启")
         ctx.sleep(10, "等待基带重新注册网络")
 
-        modem, modem_error = get_modem_info()
+        modem, modem_error = get_modem_info(device_id)
         if modem_error:
             ctx.log(f"当前还无法读取基带状态：{modem_error}", "warning")
         else:
@@ -2572,13 +2790,19 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
     task = next((item for item in tasks if item["id"] == task_id), None)
     if not task:
         raise RuntimeError("保活任务不存在或已删除")
+    device_id = str(task.get("device_id", "") or payload.get("device_id", "")).strip()
+    if not device_id:
+        raise RuntimeError("保活任务未绑定设备，请先在短信保活页面选择设备")
+    device = device_status_for_id(device_id)
+    if not device:
+        raise RuntimeError("保活任务绑定的设备当前不可用")
 
-    is_esim = esim_management_enabled()
+    is_esim = bool(device.get("capabilities", {}).get("esim_supported") and task.get("profile_iccid"))
     trigger = str(payload.get("trigger", "manual")).strip() or "manual"
     scheduled_for = str(payload.get("scheduled_for", "")).strip()
 
     if is_esim:
-        profiles = refresh_profile_cache(force=True)
+        profiles = attach_profile_device_id(refresh_profile_cache(force=True), device_id)
         target_profile_name = profile_name_for_iccid(task["profile_iccid"], profiles)
         active_profile = active_profile_from_list(profiles)
         original_profile_iccid = str(active_profile.get("iccid", "")).strip()
@@ -2601,6 +2825,7 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
     last_detail = ""
 
     ctx.log(f"开始执行保活任务：{task['label']}")
+    ctx.log(f"目标设备：{device.get('label') or device_id}")
     ctx.log(f"目标 Profile：{target_profile_name}")
     ctx.log(f"目标号码：{task['target_number']}")
     if scheduled_for:
@@ -2609,12 +2834,12 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
     try:
         if is_esim and task.get("profile_iccid", "") and task["profile_iccid"] != original_profile_iccid:
             wait_for_keepalive_gap(ctx, settings["queue_gap_seconds"])
-            switch_profile(ctx, {"iccid": task["profile_iccid"]}, schedule_gap_after=False)
+            switch_profile(ctx, {"iccid": task["profile_iccid"], "device_id": device_id}, schedule_gap_after=False)
             switched_to_target = True
             ctx.sleep(KEEPALIVE_SWITCH_SETTLE_SECONDS, "等待切卡后的网络重新稳定")
         elif is_esim:
             ctx.log("目标 Profile 当前已在使用，跳过切卡")
-            if apply_profile_smsc_if_configured(ctx, task.get("profile_iccid", "")):
+            if apply_profile_smsc_if_configured(ctx, task.get("profile_iccid", ""), device_id=device_id):
                 ctx.log("已按目标 Profile 自动应用短信中心")
             else:
                 ctx.log("目标 Profile 未配置短信中心，继续按基带现有配置发送")
@@ -2625,12 +2850,12 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
         for attempt in range(1, KEEPALIVE_MAX_SEND_ATTEMPTS + 1):
             attempts = attempt
             ctx.log(f"开始第 {attempt} 次保活短信发送")
-            ready, detail = wait_for_modem_network_ready(ctx)
+            ready, detail = wait_for_modem_network_ready(ctx, device_id=device_id)
             if not ready:
                 last_detail = detail
                 ctx.log(detail, "warning")
             else:
-                send_keepalive_sms(ctx, task["target_number"], task["message"])
+                send_keepalive_sms(ctx, task["target_number"], task["message"], device_id)
                 send_success = True
                 last_detail = "短信发送成功"
                 break
@@ -2671,7 +2896,7 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
             try:
                 if original_profile_iccid:
                     ctx.log(f"准备切回原 Profile：{original_profile_name or profile_name_for_iccid(original_profile_iccid, profiles)}")
-                    switch_profile(ctx, {"iccid": original_profile_iccid}, schedule_gap_after=False)
+                    switch_profile(ctx, {"iccid": original_profile_iccid, "device_id": device_id}, schedule_gap_after=False)
                 else:
                     ctx.log("当前没有可识别的原始 Profile，已跳过回切", "warning")
             except Exception as exc:
@@ -2705,13 +2930,13 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
         update_sim_mode(ctx, payload)
         return
     if action == "recover_modem":
-        recover_modem(ctx)
+        recover_modem(ctx, payload)
         return
     if action == "restart_sms":
         restart_sms_service(ctx)
         return
     if action == "resend_last_sms":
-        resend_last_sms(ctx)
+        resend_last_sms(ctx, payload)
         return
     if action == "send_test_sms":
         send_test_sms(ctx, payload)
@@ -2765,12 +2990,15 @@ def start_action(action: str, payload: dict[str, Any], *, metadata: Optional[dic
         _, tasks = load_keepalive_config()
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task:
+            device = device_status_for_id(str(task.get("device_id", "")))
             effective_metadata = {
                 "kind": "keepalive",
                 "task_id": task["id"],
                 "label": task["label"],
+                "device_id": task.get("device_id", ""),
+                "device_label": device.get("label", ""),
                 "profile_iccid": task["profile_iccid"],
-                "profile_name": profile_name_for_iccid(task["profile_iccid"], get_cached_profiles()[0]),
+                "profile_name": profile_name_for_iccid(task["profile_iccid"], get_cached_profiles()[0]) if task.get("profile_iccid") else "",
                 "target_number": task["target_number"],
                 "scheduled_for": str(payload.get("scheduled_for", "")).strip(),
                 "trigger": str(payload.get("trigger", "manual")).strip() or "manual",
@@ -2816,12 +3044,15 @@ def action_queue_worker() -> None:
 
 def enqueue_keepalive_action(task: dict[str, Any], *, trigger: str, scheduled_for: Optional[datetime]) -> str:
     scheduled_for_text = scheduled_for.isoformat() if scheduled_for else ""
+    device = device_status_for_id(str(task.get("device_id", "")))
     metadata = {
         "kind": "keepalive",
         "task_id": task["id"],
         "label": task["label"],
+        "device_id": task.get("device_id", ""),
+        "device_label": device.get("label", ""),
         "profile_iccid": task["profile_iccid"],
-        "profile_name": profile_name_for_iccid(task["profile_iccid"], get_cached_profiles()[0]),
+        "profile_name": profile_name_for_iccid(task["profile_iccid"], get_cached_profiles()[0]) if task.get("profile_iccid") else "",
         "target_number": task["target_number"],
         "scheduled_for": scheduled_for_text,
         "trigger": trigger,
@@ -3380,14 +3611,14 @@ class AppHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    if esim_management_enabled():
+    if os.path.exists("/opt/lpac/lpac"):
         try:
             refresh_profile_cache(force=True)
             print("eSIM profile cache initialized")
         except Exception as exc:
             print(f"eSIM profile cache init failed: {exc}")
     else:
-        print("eSIM management disabled for physical SIM mode")
+        print("lpac not installed, eSIM management unavailable")
     threading.Thread(target=action_queue_worker, daemon=True).start()
     threading.Thread(target=keepalive_scheduler, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)

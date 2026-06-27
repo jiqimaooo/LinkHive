@@ -226,10 +226,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast.info("当前已有任务在执行，请稍等")
       return
     }
-    if (action === "switch_profile" && !(status?.capabilities.esim_management_enabled ?? true)) {
-      toast.info("当前为普通 SIM 模式，eSIM 管理功能已禁用")
-      return
-    }
     setSubmittingActionLabel(label)
     appendLog({
       time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
@@ -272,7 +268,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       toast.error(message)
     }
-  }, [activeAction, appendLog, pollAction, status?.capabilities.esim_management_enabled, submittingActionLabel])
+  }, [activeAction, appendLog, pollAction, submittingActionLabel])
 
   const saveNotifications = useCallback(async () => {
     if (activeAction || submittingActionLabel) {
@@ -357,8 +353,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     try {
       const payloadTasks = keepaliveTasks.map((task, index) => {
+        const device = (status?.devices ?? []).find((item) => item.id === task.device_id)
         if (!task.label.trim()) throw new Error(`第 ${index + 1} 条保活任务缺少名称`)
-        if (esimEnabled && !task.profile_iccid.trim()) throw new Error(`保活任务 ${task.label} 缺少 Profile`)
+        if (!task.device_id.trim()) throw new Error(`保活任务 ${task.label} 缺少目标设备`)
+        if (!device) throw new Error(`保活任务 ${task.label} 绑定的设备当前不可用`)
         if (!task.target_number.trim()) throw new Error(`保活任务 ${task.label} 缺少目标手机号`)
         if (!task.message.trim()) throw new Error(`保活任务 ${task.label} 缺少短信内容`)
         if (task.cron_expression.trim().split(/\s+/).length !== 5) throw new Error(`保活任务 ${task.label} 的 cron 表达式必须是 5 段`)
@@ -366,6 +364,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           id: task.id,
           label: task.label.trim(),
           enabled: task.enabled,
+          device_id: task.device_id.trim(),
           profile_iccid: task.profile_iccid.trim(),
           target_number: task.target_number.trim(),
           message: task.message,
@@ -403,7 +402,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       appendLog({ time: new Date().toLocaleTimeString("zh-CN", { hour12: false }), level: "error", message })
       toast.error(message)
     }
-  }, [activeAction, appendLog, esimEnabled, keepaliveSettings, keepaliveTasks, refreshStatus, submittingActionLabel, syncFormsFromStatus])
+  }, [activeAction, appendLog, keepaliveSettings, keepaliveTasks, refreshStatus, status?.devices, submittingActionLabel, syncFormsFromStatus])
 
   const sendKeepaliveTestSms = useCallback(async (task: KeepaliveFormTask) => {
     const number = task.target_number.trim()
@@ -411,7 +410,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const taskLabel = task.label.trim() || "保活任务"
     if (!number) { toast.error(`保活任务 ${taskLabel} 缺少目标手机号`); return }
     if (!message) { toast.error(`保活任务 ${taskLabel} 缺少短信内容`); return }
-    await runAction("send_test_sms", { number, message }, `测试保活短信 ${taskLabel}`)
+    if (!task.device_id.trim()) { toast.error(`保活任务 ${taskLabel} 缺少目标设备`); return }
+    await runAction("send_test_sms", { device_id: task.device_id, number, message }, `测试保活短信 ${taskLabel}`)
   }, [runAction])
 
   const saveProfileSmsc = useCallback(async (profile: import("@/lib/types").Profile, preset?: ProfileSmscFormState) => {
@@ -426,7 +426,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     await runAction(
       "save_profile_smsc",
-      { iccid: profile.iccid, smsc_address: address, smsc_type: type, apply_now: Boolean(profile.is_active) },
+      { device_id: profile.device_id || "", iccid: profile.iccid, smsc_address: address, smsc_type: type, apply_now: Boolean(profile.is_active) },
       profile.is_active ? `保存并应用 ${profile.display_name} 的短信中心` : `保存 ${profile.display_name} 的短信中心`,
     )
   }, [profileSmscForms, runAction])

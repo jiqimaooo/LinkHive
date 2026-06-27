@@ -1,32 +1,56 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState, type MutableRefObject } from "react"
+import { useLocation } from "react-router-dom"
 import {
-  RadioTowerIcon,
-  SignalIcon,
-  RouterIcon,
-  RefreshCwIcon,
-  AlertTriangleIcon,
-  SendIcon,
-  PhoneIcon,
+  BadgeCheckIcon,
+  CardSimIcon,
   CpuIcon,
+  MessageSquareTextIcon,
+  RadioTowerIcon,
+  RefreshCwIcon,
+  RouterIcon,
+  SendIcon,
   SettingsIcon,
-  SearchIcon,
+  SignalIcon,
+  SmartphoneIcon,
+  WifiIcon,
+  XCircleIcon,
 } from "lucide-react"
 import { useAppContext } from "@/hooks/app-context"
 import { PageHeader } from "@/components/shared/page-header"
+import { EmptyState } from "@/components/shared/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import {
-  formatRegistrationState,
+  displayValue,
   formatAccessTech,
   formatCurrentModes,
-  signalVariant,
+  formatOperatorName,
+  formatRegistrationState,
   friendlyActionName,
+  inferRadioMode,
 } from "@/lib/helpers"
+import type { DeviceStatus, Profile } from "@/lib/types"
+
+const TAB_ITEMS = [
+  { key: "overview", label: "概览", icon: CpuIcon },
+  { key: "network", label: "网络", icon: SettingsIcon },
+  { key: "sms", label: "短信", icon: MessageSquareTextIcon },
+  { key: "esim", label: "eSIM", icon: BadgeCheckIcon },
+  { key: "actions", label: "操作", icon: RouterIcon },
+] as const
+
+type TabKey = (typeof TAB_ITEMS)[number]["key"]
+
+type NetworkForm = {
+  apn: string
+  username: string
+  password: string
+  ip_type: string
+}
 
 const RADIO_MODE_LABELS: Record<string, string> = {
   "4g_only": "仅 4G",
@@ -40,36 +64,49 @@ const IP_TYPE_LABELS: Record<string, string> = {
   ipv4v6: "IPv4 / IPv6",
 }
 
-type TabKey = "status" | "network" | "actions"
-
-const TABS: { key: TabKey; label: string; icon: typeof CpuIcon }[] = [
-  { key: "status", label: "设备状态", icon: CpuIcon },
-  { key: "network", label: "网络设置", icon: SettingsIcon },
-  { key: "actions", label: "设备操作", icon: RouterIcon },
-]
-
 export default function DevicesPage() {
+  const location = useLocation()
   const {
-    status, activeAction, isRefreshing,
-    refreshStatus, runAction, actionBusy,
-    apnForm, setApnForm, radioMode, setRadioMode,
-    networkCode, setNetworkCode,
-    apnDirtyRef, networkDirtyRef, radioModeDirtyRef,
+    status,
+    activeAction,
+    isRefreshing,
+    refreshStatus,
+    runAction,
+    actionBusy,
+    profileSmscForms,
+    setProfileSmscForms,
+    expandedProfileIccid,
+    setExpandedProfileIccid,
+    saveProfileSmsc,
+    profileSmscDirtyRef,
   } = useAppContext()
+  const devices = useMemo(() => status?.devices ?? [], [status?.devices])
+  const [selectedDeviceId, setSelectedDeviceId] = useState("")
+  const [activeTab, setActiveTab] = useState<TabKey>(() => routeTab(location.pathname))
+  const selectedDevice = useMemo(
+    () => devices.find((device) => device.id === selectedDeviceId) ?? devices[0] ?? null,
+    [devices, selectedDeviceId],
+  )
 
-  const [activeTab, setActiveTab] = useState<TabKey>("status")
+  useEffect(() => {
+    setActiveTab(routeTab(location.pathname))
+  }, [location.pathname])
 
-  const device = status?.dashboard?.device
-  const modem = status?.modem
-  const deviceName = [device?.manufacturer, device?.model].filter(Boolean).join(" ") || "未检测到设备"
-  const signalDbm = modem?.signal_dbm
-  const signalDisplay = signalDbm && signalDbm !== "--" ? signalDbm : "未上报"
+  useEffect(() => {
+    if (!devices.length) {
+      setSelectedDeviceId("")
+      return
+    }
+    if (!selectedDeviceId || !devices.some((device) => device.id === selectedDeviceId)) {
+      setSelectedDeviceId(devices[0].id)
+    }
+  }, [devices, selectedDeviceId])
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="设备管理"
-        description="查看设备状态、配置网络参数和执行设备操作。"
+        description="按设备管理蜂窝网络、短信能力和 eSIM Profiles。"
         actions={
           <>
             {activeAction ? <Badge variant="outline">{friendlyActionName(activeAction.action)}</Badge> : null}
@@ -77,152 +114,241 @@ export default function DevicesPage() {
               type="button"
               onClick={() => { void refreshStatus(false, true) }}
               disabled={isRefreshing}
-              className="inline-flex items-centerjustify-center size-8 rounded-lg text-muted-foreground hover:bg-slate-100 hover:text-foreground transition-colors disabled:opacity-50"
+              className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-slate-100 hover:text-foreground disabled:opacity-50 dark:hover:bg-white/10"
               aria-label="刷新"
             >
-              <RefreshCwIcon className={isRefreshing ? "animate-spin size-4" : "size-4"} />
+              <RefreshCwIcon className={isRefreshing ? "size-4 animate-spin" : "size-4"} />
             </button>
           </>
         }
       />
 
-      {/* 告警提示 */}
-      {status?.status_message || (status?.errors?.length ?? 0) > 0 ? (
-        <div className={status?.modem_available ? "glass-panel-warning rounded-xl p-4 text-amber-800 dark:text-amber-200" : "glass-panel-danger rounded-xl p-4 text-rose-800 dark:text-rose-200"}>
-          <div className="flex items-center gap-2 font-medium"><AlertTriangleIcon className="size-4" />{status?.status_message || "设备有告警信息"}</div>
-          {(status?.errors ?? []).length > 0 ? <p className="mt-1 text-sm opacity-80">{status?.errors.join("；")}</p> : null}
+      {!devices.length ? (
+        <div className="glass-card rounded-2xl p-10">
+          <EmptyState icon={SmartphoneIcon} title="未检测到蜂窝设备" description="请确认 ModemManager 能识别 4G 模块，然后刷新状态。" />
         </div>
-      ) : null}
-
-      {/* 设备卡片 */}
-      <div className="glass-card rounded-2xl border border-white/60 dark:border-white/10 overflow-hidden">
-        {/* 设备标识头 */}
-        <div className="flex items-center gap-4 px-6 py-4 border-b border-slate-100 dark:border-white/5">
-          <div className="flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/20">
-            <CpuIcon className="size-5" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">{deviceName}</h3>
-              <Badge variant={status?.modem_available ? "default" : "destructive"} className="shrink-0 rounded-full text-[0.65rem] h-5">
-                {status?.modem_available ? "在线" : "离线"}
-              </Badge>
-            </div>
-            <p className="text-sm text-slate-500 dark:text-slate-400 truncate">
-              IMEI: {device?.imei || "--"} · {formatAccessTech(modem?.access_tech || "--")} · 信号 {signalDisplay}
-            </p>
-          </div>
-          <Badge variant={signalVariant(modem?.signal || "--")} className="h-6 rounded-full text-xs font-medium shrink-0">
-            {modem?.signal || "--"}%
-          </Badge>
-        </div>
-
-        {/* Tab 切换 */}
-        <div className="flex border-b border-slate-100 dark:border-white/5 px-6">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={cn(
-                "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors -mb-px",
-                activeTab === tab.key
-                  ? "border-blue-600 text-blue-700 dark:text-blue-300 dark:border-blue-400"
-                  : "border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200",
-              )}
-            >
-              <tab.icon className="size-4" />
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab 内容 */}
-        <div className="p-6">
-          {activeTab === "status" && <StatusPanel />}
-          {activeTab === "network" && (
-            <NetworkPanel
-              apnForm={apnForm} setApnForm={setApnForm}
-              radioMode={radioMode} setRadioMode={setRadioMode}
-              networkCode={networkCode} setNetworkCode={setNetworkCode}
-              status={status} actionBusy={actionBusy} runAction={runAction}
-              apnDirtyRef={apnDirtyRef} networkDirtyRef={networkDirtyRef} radioModeDirtyRef={radioModeDirtyRef}
+      ) : (
+        <div className="grid gap-5 xl:grid-cols-[19rem_minmax(0,1fr)]">
+          <DeviceList devices={devices} selectedDeviceId={selectedDevice?.id ?? ""} onSelect={setSelectedDeviceId} />
+          {selectedDevice ? (
+            <DeviceDetail
+              device={selectedDevice}
+              profiles={status?.profiles ?? []}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              actionBusy={actionBusy}
+              runAction={runAction}
+              profileSmscForms={profileSmscForms}
+              setProfileSmscForms={setProfileSmscForms}
+              expandedProfileIccid={expandedProfileIccid}
+              setExpandedProfileIccid={setExpandedProfileIccid}
+              saveProfileSmsc={saveProfileSmsc}
+              profileSmscDirtyRef={profileSmscDirtyRef}
             />
-          )}
-          {activeTab === "actions" && <ActionsPanel actionBusy={actionBusy} runAction={runAction} />}
+          ) : null}
         </div>
-      </div>
+      )}
     </div>
   )
 }
 
-/* ─── 设备状态面板 ─── */
-function StatusPanel() {
-  const { status } = useAppContext()
-  const device = status?.dashboard?.device
-  const modem = status?.modem
+function routeTab(pathname: string): TabKey {
+  if (pathname.includes("/network")) return "network"
+  if (pathname.includes("/esim")) return "esim"
+  return "overview"
+}
 
-  type InfoItem = { label: string; value: string; mono?: boolean; muted?: boolean }
+function DeviceList({ devices, selectedDeviceId, onSelect }: { devices: DeviceStatus[]; selectedDeviceId: string; onSelect: (id: string) => void }) {
+  return (
+    <aside className="space-y-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">设备列表</div>
+      {devices.map((device) => {
+        const selected = device.id === selectedDeviceId
+        return (
+          <button
+            key={device.id}
+            type="button"
+            onClick={() => onSelect(device.id)}
+            className={cn(
+              "glass-panel w-full rounded-2xl p-4 text-left transition-colors",
+              selected && "glass-panel-selected",
+            )}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-500/20">
+                <SmartphoneIcon className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold">{device.label}</div>
+                <div className="mt-1 truncate text-xs text-muted-foreground">IMEI {displayValue(device.imei, "--")}</div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <Badge variant={device.registration === "home" || device.registration === "roaming" ? "default" : "outline"}>{formatRegistrationState(device.registration)}</Badge>
+                  <Badge variant="outline">{device.capabilities.esim_supported ? "eSIM" : "普通 SIM"}</Badge>
+                </div>
+              </div>
+            </div>
+          </button>
+        )
+      })}
+    </aside>
+  )
+}
 
-  const infoGroups: { title: string; icon: typeof CpuIcon; items: InfoItem[] }[] = [
+function DeviceDetail({
+  device,
+  profiles,
+  activeTab,
+  setActiveTab,
+  actionBusy,
+  runAction,
+  profileSmscForms,
+  setProfileSmscForms,
+  expandedProfileIccid,
+  setExpandedProfileIccid,
+  saveProfileSmsc,
+  profileSmscDirtyRef,
+}: {
+  device: DeviceStatus
+  profiles: Profile[]
+  activeTab: TabKey
+  setActiveTab: (tab: TabKey) => void
+  actionBusy: boolean
+  runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void>
+  profileSmscForms: Record<string, { address: string; type: string }>
+  setProfileSmscForms: (updater: (current: Record<string, { address: string; type: string }>) => Record<string, { address: string; type: string }>) => void
+  expandedProfileIccid: string | null
+  setExpandedProfileIccid: (value: string | null) => void
+  saveProfileSmsc: (profile: Profile, preset?: { address: string; type: string }) => Promise<void>
+  profileSmscDirtyRef: MutableRefObject<boolean>
+}) {
+  const deviceProfiles = profiles.filter((profile) => !profile.device_id || profile.device_id === device.id)
+
+  return (
+    <section className="glass-card overflow-hidden rounded-2xl">
+      <div className="border-b border-white/60 p-5 dark:border-white/10">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="truncate text-xl font-semibold">{device.label}</h2>
+              <Badge variant={device.registration === "home" || device.registration === "roaming" ? "default" : "outline"}>
+                {formatRegistrationState(device.registration)}
+              </Badge>
+              <Badge variant="outline">{device.active_sim_kind === "esim" ? "eSIM" : device.active_sim_kind === "physical" ? "普通 SIM" : "SIM 类型未确认"}</Badge>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {formatOperatorName(device.operator_name, device.operator_code)} · {formatAccessTech(device.access_tech || "--")} · 信号 {displayValue(device.signal_dbm, "--")}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+            <MiniStat label="短信" value={device.capabilities.sms_supported ? "支持" : "不支持"} />
+            <MiniStat label="eSIM" value={device.capabilities.esim_supported ? "支持" : "不支持"} />
+            <MiniStat label="IP" value={displayValue(device.ip_address, "--")} />
+            <MiniStat label="接口" value={displayValue(device.interface_name, "--")} />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-1 overflow-x-auto border-b border-white/60 px-4 dark:border-white/10">
+        {TAB_ITEMS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={cn(
+              "flex min-h-12 shrink-0 items-center gap-2 border-b-2 px-3 text-sm font-medium transition-colors",
+              activeTab === tab.key
+                ? "border-blue-600 text-blue-700 dark:border-blue-300 dark:text-blue-200"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <tab.icon className="size-4" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-5">
+        {activeTab === "overview" ? <OverviewTab device={device} /> : null}
+        {activeTab === "network" ? <NetworkTab device={device} actionBusy={actionBusy} runAction={runAction} /> : null}
+        {activeTab === "sms" ? <SmsTab device={device} actionBusy={actionBusy} runAction={runAction} /> : null}
+        {activeTab === "esim" ? (
+          <EsimTab
+            device={device}
+            profiles={deviceProfiles}
+            actionBusy={actionBusy}
+            runAction={runAction}
+            profileSmscForms={profileSmscForms}
+            setProfileSmscForms={setProfileSmscForms}
+            expandedProfileIccid={expandedProfileIccid}
+            setExpandedProfileIccid={setExpandedProfileIccid}
+            saveProfileSmsc={saveProfileSmsc}
+            profileSmscDirtyRef={profileSmscDirtyRef}
+          />
+        ) : null}
+        {activeTab === "actions" ? <ActionsTab device={device} actionBusy={actionBusy} runAction={runAction} /> : null}
+      </div>
+    </section>
+  )
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="glass-panel rounded-xl px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate font-medium">{value}</div>
+    </div>
+  )
+}
+
+function OverviewTab({ device }: { device: DeviceStatus }) {
+  const groups = [
     {
-      title: "硬件信息",
+      title: "设备",
       icon: CpuIcon,
       items: [
-        { label: "厂商", value: device?.manufacturer || "--" },
-        { label: "型号", value: device?.model || "--" },
-        { label: "IMEI", value: device?.imei || "--", mono: true },
+        ["厂商", device.manufacturer],
+        ["型号", device.model],
+        ["IMEI", device.imei],
+        ["设备号码", device.number],
       ],
     },
     {
-      title: "网络状态",
+      title: "SIM",
+      icon: CardSimIcon,
+      items: [
+        ["ICCID", device.iccid],
+        ["当前 SIM", device.sim_label],
+        ["归属运营商", formatOperatorName(device.home_operator, device.home_operator_code)],
+        ["归属运营商代码", device.home_operator_code],
+      ],
+    },
+    {
+      title: "网络",
       icon: RadioTowerIcon,
       items: [
-        { label: "运营商", value: modem?.operator_name || "--" },
-        { label: "注册状态", value: formatRegistrationState(modem?.registration || "--") },
-        { label: "接入技术", value: formatAccessTech(modem?.access_tech || "--") },
-        { label: "网络制式", value: formatCurrentModes(modem?.current_modes || "--") },
-        { label: "漫游", value: device?.roaming ? "漫游中" : "未漫游" },
-      ],
-    },
-    {
-      title: "信号与连接",
-      icon: SignalIcon,
-      items: [
-        { label: "信号质量", value: `${modem?.signal || "--"}%` },
-       { label: "信号强度", value: modem?.signal_dbm && modem.signal_dbm !== "--" ? modem.signal_dbm : "未上报" },
-        { label: "APN", value: modem?.apn || "--" },
-        { label: "IP 类型", value: modem?.ip_type || "--" },
-        { label:"IP 地址", value: device?.ip_address || "--", mono: true },
-      ],
-    },
-    {
-      title: "语音服务",
-      icon: PhoneIcon,
-      items: [
-        { label: "VoLTE", value: modem?.volte_supported === false ? "不支持" : modem?.volte_enabled ? "已启用" : "未启用", muted: modem?.volte_supported === false },
-        { label: "VoWiFi", value: modem?.vowifi_supported === false ? "不支持" : modem?.vowifi_enabled ? "已启用" : "未启用", muted: modem?.vowifi_supported === false },
+        ["当前运营商", formatOperatorName(device.operator_name, device.operator_code)],
+        ["运营商代码", device.operator_code],
+        ["网络制式", formatAccessTech(device.access_tech)],
+        ["信号强度", device.signal_dbm || "--"],
+        ["注册状态", formatRegistrationState(device.registration)],
+        ["漫游状态", device.roaming ? "漫游" : "未漫游"],
       ],
     },
   ]
 
   return (
-    <div className="grid gap-6 md:grid-cols-2">
-      {infoGroups.map((group) => (
-        <div key={group.title} className="space-y-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
-            <group.icon className="size-4 text-slate-400" />
-            {group.title}
+    <div className="grid gap-4 xl:grid-cols-3">
+      {groups.map((group) => (
+        <div key={group.title} className="glass-panel rounded-2xl p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-base font-semibold">{group.title}</h3>
+            <group.icon className="size-4 text-muted-foreground" />
           </div>
-          <div className="rounded-xl border border-slate-100 dark:border-white/5 divide-y divide-slate-50 dark:divide-white/5">
-            {group.items.map((item) => (
-              <div key={item.label} className="flex items-center justify-between px-4 py-2.5">
-                <span className="text-sm text-slate-500 dark:text-slate-400">{item.label}</span>
-                <span className={cn(
-                  "text-sm font-medium",
-                  item.muted ? "text-slate-400 dark:text-slate-500" : "text-slate-900 dark:text-slate-100",
-                  item.mono && "font-mono tabular-nums text-xs",
-                )}>{item.value}</span>
+          <div className="divide-y divide-white/60 dark:divide-white/10">
+            {group.items.map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between gap-3 py-3 text-sm">
+                <span className="text-muted-foreground">{label}</span>
+                <span className="min-w-0 truncate text-right font-medium">{displayValue(value)}</span>
               </div>
             ))}
           </div>
@@ -232,169 +358,172 @@ function StatusPanel() {
   )
 }
 
-/* ─── 网络设置面板 ─── */
-function NetworkPanel({
-  apnForm, setApnForm, radioMode, setRadioMode,
-  networkCode, setNetworkCode, status, actionBusy, runAction,
-  apnDirtyRef, networkDirtyRef, radioModeDirtyRef,
-}: {
-  apnForm: any; setApnForm: any; radioMode: string; setRadioMode: any
-  networkCode: string; setNetworkCode: any; status: any; actionBusy: boolean; runAction: any
-  apnDirtyRef: any; networkDirtyRef: any; radioModeDirtyRef: any
-}) {
-  const modem = status?.modem
+function NetworkTab({ device, actionBusy, runAction }: { device: DeviceStatus; actionBusy: boolean; runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void> }) {
+  const [networkForm, setNetworkForm] = useState<NetworkForm>({ apn: "", username: "", password: "", ip_type: "ipv4v6" })
+  const [radioMode, setRadioMode] = useState("network_disabled")
+  const [networkCode, setNetworkCode] = useState("")
+
+  useEffect(() => {
+    setNetworkForm({
+      apn: device.connection?.apn || "",
+      username: device.connection?.username || "",
+      password: device.connection?.password || "",
+      ip_type: device.connection?.ip_type || "ipv4v6",
+    })
+    setRadioMode(inferRadioMode(device.current_modes || ""))
+    setNetworkCode(device.connection?.network_id || "")
+  }, [device])
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      {/* APN 配置 */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
-          <RadioTowerIcon className="size-4 text-slate-400" />
-          APN 配置
-        </div>
-        <div className="rounded-xl border border-slate-100 dark:border-white/5 p-4 space-y-4">
-          <div className="grid gap-2">
-            <Label htmlFor="apn">APN</Label>
-            <Input id="apn" value={apnForm.apn} onChange={(e) => { apnDirtyRef.current = true; setApnForm((c: any) => ({ ...c, apn: e.target.value })) }} placeholder="例如 fast.t-mobile.com" />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2"><Label htmlFor="apn-user">用户名</Label><Input id="apn-user" value={apnForm.username} onChange={(e) => { apnDirtyRef.current = true; setApnForm((c: any) => ({ ...c, username: e.target.value })) }} placeholder="可留空" /></div>
-            <div className="grid gap-2"><Label htmlFor="apn-pass">密码</Label><Input id="apn-pass" type="password" value={apnForm.password} onChange={(e) => { apnDirtyRef.current = true; setApnForm((c: any) => ({ ...c, password: e.target.value })) }} placeholder="可留空" /></div>
-          </div>
-          <div className="grid gap-2 max-w-xs">
-            <Label>IP 类型</Label>
-            <Select value={apnForm.ip_type} onValueChange={(v) => { apnDirtyRef.current = true; setApnForm((c: any) => ({ ...c, ip_type: v ?? c.ip_type })) }}>
-              <SelectTrigger className="w-full"><span className={apnForm.ip_type ? "" : "text-muted-foreground"}>{IP_TYPE_LABELS[apnForm.ip_type] || "选择 IP 类型"}</span></SelectTrigger>
-              <SelectContent><SelectGroup><SelectLabel>承载模式</SelectLabel><SelectItem value="ipv4">仅 IPv4</SelectItem><SelectItem value="ipv6">仅 IPv6</SelectItem><SelectItem value="ipv4v6">IPv4 / IPv6</SelectItem></SelectGroup></SelectContent>
-            </Select>
-          </div>
-          <Button type="button" disabled={actionBusy} onClick={() => { void runAction("save_apn", apnForm, "保存 APN 配置") }} className="w-full sm:w-auto">
-            <SendIcon className="size-4 mr-1.5" />应用并保存
-          </Button>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="glass-panel rounded-2xl p-4">
+        <h3 className="mb-4 flex items-center gap-2 text-base font-semibold"><WifiIcon className="size-4" />APN 配置</h3>
+        <div className="grid gap-3">
+          <div className="grid gap-2"><Label htmlFor="apn">APN</Label><Input id="apn" value={networkForm.apn} onChange={(event) => setNetworkForm((current) => ({ ...current, apn: event.target.value }))} /></div>
+          <div className="grid gap-2"><Label htmlFor="apn-user">用户名</Label><Input id="apn-user" value={networkForm.username} onChange={(event) => setNetworkForm((current) => ({ ...current, username: event.target.value }))} /></div>
+          <div className="grid gap-2"><Label htmlFor="apn-password">密码</Label><Input id="apn-password" type="password" value={networkForm.password} onChange={(event) => setNetworkForm((current) => ({ ...current, password: event.target.value }))} /></div>
+          <div className="grid gap-2"><Label>IP 类型</Label><Select value={networkForm.ip_type} onValueChange={(value) => setNetworkForm((current) => ({ ...current, ip_type: value ?? "ipv4v6" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(IP_TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+          <Button type="button" disabled={actionBusy} onClick={() => { void runAction("save_apn", { ...networkForm, device_id: device.id }, `保存 ${device.label} APN`) }}><SendIcon data-icon="inline-start" />应用并保存</Button>
         </div>
       </div>
 
-      {/* 右侧：制式 + 选网 + IMS */}
-      <div className="space-y-6">
-        {/* 网络制式 */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
-            <SignalIcon className="size-4 text-slate-400" />
-            网络制式
-          </div>
-          <div className="rounded-xl border border-slate-100 dark:border-white/5 p-4 space-y-3">
-            <p className="text-sm text-slate-500">{formatAccessTech(modem?.access_tech || "--")} · {formatCurrentModes(modem?.current_modes || "--")}</p>
-            <Select value={radioMode} onValueChange={(v) => { radioModeDirtyRef.current = true; setRadioMode(v ?? "4g_only") }}>
-              <SelectTrigger className="w-full"><span className={radioMode ? "" : "text-muted-foreground"}>{RADIO_MODE_LABELS[radioMode] || "选择网络制式"}</span></SelectTrigger>
-              <SelectContent><SelectGroup><SelectLabel>网络制式</SelectLabel><SelectItem value="4g_only">仅 4G</SelectItem><SelectItem value="3g4g_prefer4g">3G / 4G，优先 4G</SelectItem><SelectItem value="3g_only">仅 3G</SelectItem></SelectGroup></SelectContent>
-            </Select>
-            <Button type="button" variant="outline" className="w-full" disabled={actionBusy} onClick={() => { void runAction("apply_radio_mode", { mode: radioMode }, "应用网络制式") }}>应用</Button>
-          </div>
+      <div className="glass-panel rounded-2xl p-4">
+        <h3 className="mb-4 flex items-center gap-2 text-base font-semibold"><SignalIcon className="size-4" />网络制式与选网</h3>
+        <div className="grid gap-4">
+          <div className="grid gap-2"><Label>网络制式</Label><Select value={radioMode} onValueChange={(value) => setRadioMode(value ?? "network_disabled")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(RADIO_MODE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select><Button type="button" variant="outline" disabled={actionBusy} onClick={() => { void runAction("apply_radio_mode", { device_id: device.id, mode: radioMode }, `应用 ${device.label} 网络制式`) }}>应用制式</Button></div>
+          <div className="grid gap-2"><Label htmlFor="network-code">运营商代码</Label><Input id="network-code" value={networkCode} onChange={(event) => setNetworkCode(event.target.value)} placeholder="例如 46000" /><div className="grid gap-2 sm:grid-cols-2"><Button type="button" variant="outline" disabled={actionBusy || !networkCode.trim()} onClick={() => { void runAction("apply_network_selection", { device_id: device.id, operator_code: networkCode.trim() }, `手动选网 ${networkCode.trim()}`) }}>手动选网</Button><Button type="button" variant="outline" disabled={actionBusy} onClick={() => { void runAction("apply_network_selection", { device_id: device.id, operator_code: "" }, `恢复 ${device.label} 自动选网`) }}>自动选网</Button></div></div>
+          <div className="rounded-xl border border-white/60 p-3 text-sm text-muted-foreground dark:border-white/10 whitespace-pre-wrap">{formatCurrentModes(device.current_modes || "--")}</div>
         </div>
-
-        {/* 网络选择 */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
-            <SearchIcon className="size-4 text-slate-400" />
-            网络选择
-          </div>
-          <div className="rounded-xl border border-slate-100 dark:border-white/5 p-4 space-y-3">
-            <p className="text-sm text-slate-500">当前：{status?.connection.network_id || "自动"}</p>
-            <Input value={networkCode} onChange={(e) => { networkDirtyRef.current = true; setNetworkCode(e.target.value) }} placeholder="运营商代码，例如 46000" />
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" size="sm" disabled={actionBusy || !networkCode.trim()} onClick={() => { void runAction("apply_network_selection", { operator_code: networkCode.trim() }, `手动选网 ${networkCode.trim()}`) }}>�动选网</Button>
-              <Button type="button" variant="outline" size="sm" disabled={actionBusy} onClick={() => { void runAction("apply_network_selection", { operator_code: "" }, "恢复自动选网") }}>自动选网</Button>
-            </div>
-          </div>
-        </div>
-
-        {/* IMS 语音 */}
-        {modem?.ims_supported ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
-              <PhoneIcon className="size-4 text-slate-400" />
-              IMS 语音
-            </div>
-            <div className="rounded-xl border border-slate-100 dark:border-white/5 p-4 space-y-4">
-              <div className={cn("flex items-center justify-between", modem?.volte_supported === false && "opacity-50")}>
-                <div><p className="text-sm font-medium">VoLTE</p><p className="text-xs text-slate-500">{modem?.volte_supported === false ? "当前模组不支持" : "通过 LTE 网络进行语音通话"}</p></div>
-                <Switch checked={modem?.volte_enabled ?? false} disabled={actionBusy || modem?.volte_supported === false} onCheckedChange={(checked) => { void runAction("apply_ims_settings", { volte_enabled: checked }, checked ? "开启 VoLTE" : "关闭 VoLTE") }} />
-              </div>
-              <div className={cn("flex items-center justify-between", modem?.vowifi_supported === false && "opacity-50")}>
-                <div><p className="text-sm font-medium">VoWiFi</p><p className="text-xs text-slate-500">{modem?.vowifi_supported === false ? "当前模组不支持" : "通过 WiFi 网络进行语音通话"}</p></div>
-                <Switch checked={modem?.vowifi_enabled ?? false} disabled={actionBusy || modem?.vowifi_supported === false} onCheckedChange={(checked) => { void runAction("apply_ims_settings", { vowifi_enabled: checked }, checked ? "开启 VoWiFi" : "关闭 VoWiFi") }} />
-              </div>
-            </div>
-          </div>
-        ) : null}
       </div>
     </div>
   )
 }
 
-/* ─── 设备操作面板 ─── */
-function ActionsPanel({ actionBusy, runAction }: { actionBusy: boolean; runAction: any }) {
+function SmsTab({ device, actionBusy, runAction }: { device: DeviceStatus; actionBusy: boolean; runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void> }) {
+  const [number, setNumber] = useState("")
+  const [message, setMessage] = useState("LinkHive test")
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      <ActionCard
-        icon={RouterIcon}
-        title="恢复基带"
-        description="执行 SIM 断电/上电并重启 ModemManager，适用于基带异常或信号丢失。"
-        buttonLabel="执行恢复"
-        variant="danger"
-        disabled={actionBusy}
-        onClick={() => { void runAction("recover_modem", {}, "恢复基带") }}
-      />
-      <ActionCard
-        icon={SendIcon}
-        title="重启短信转发"
-        description="重启短信转发服务，解决短信接收或转发中断问题。"
-        buttonLabel="重启服务"
-        variant="default"
-        disabled={actionBusy}
-        onClick={() => { void runAction("restart_sms", {}, "重启短信转发") }}
-      />
-      <ActionCard
-        icon={RefreshCwIcon}
-        title="扫描设备"
-        description="重新枚举 USB 设备，刷新 ModemManager 识别到的 modem 列表。"
-        buttonLabel="扫描"
-        variant="default"
-        disabled={actionBusy}
-        onClick={() => { void runAction("recover_modem", {}, "扫描设备") }}
-      />
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="glass-panel rounded-2xl p-4">
+        <h3 className="mb-3 text-base font-semibold">短信能力</h3>
+        <div className="grid gap-3 text-sm">
+          <InfoRow label="短信支持" value={device.capabilities.sms_supported ? "支持" : "不支持"} />
+          <InfoRow label="设备号码" value={displayValue(device.number)} />
+          <InfoRow label="ICCID" value={displayValue(device.iccid)} />
+        </div>
+      </div>
+      <div className="glass-panel rounded-2xl p-4">
+        <h3 className="mb-3 text-base font-semibold">发送测试短信</h3>
+        <div className="grid gap-3">
+          <div className="grid gap-2"><Label htmlFor="sms-number">目标号码</Label><Input id="sms-number" value={number} onChange={(event) => setNumber(event.target.value)} /></div>
+          <div className="grid gap-2"><Label htmlFor="sms-message">内容</Label><Input id="sms-message" value={message} onChange={(event) => setMessage(event.target.value)} /></div>
+          <Button type="button" disabled={actionBusy || !number.trim() || !message.trim()} onClick={() => { void runAction("send_test_sms", { device_id: device.id, number: number.trim(), message }, `从 ${device.label} 发送测试短信`) }}><SendIcon data-icon="inline-start" />发送</Button>
+        </div>
+      </div>
     </div>
   )
 }
 
-function ActionCard({
-  icon: Icon, title, description, buttonLabel, variant, disabled, onClick,
+function EsimTab({
+  device,
+  profiles,
+  actionBusy,
+  runAction,
+  profileSmscForms,
+  setProfileSmscForms,
+  expandedProfileIccid,
+  setExpandedProfileIccid,
+  saveProfileSmsc,
+  profileSmscDirtyRef,
 }: {
-  icon: typeof RouterIcon; title: string; description: string; buttonLabel: string
-  variant: "danger" | "default"; disabled: boolean; onClick: () => void
+  device: DeviceStatus
+  profiles: Profile[]
+  actionBusy: boolean
+  runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void>
+  profileSmscForms: Record<string, { address: string; type: string }>
+  setProfileSmscForms: (updater: (current: Record<string, { address: string; type: string }>) => Record<string, { address: string; type: string }>) => void
+  expandedProfileIccid: string | null
+  setExpandedProfileIccid: (value: string | null) => void
+  saveProfileSmsc: (profile: Profile, preset?: { address: string; type: string }) => Promise<void>
+  profileSmscDirtyRef: MutableRefObject<boolean>
 }) {
+  if (!device.capabilities.esim_supported) {
+    return (
+      <div className="glass-panel rounded-2xl p-10">
+        <EmptyState icon={XCircleIcon} title="该设备不支持 eSIM" description="当前设备仍可使用普通 SIM 的短信、网络和保活功能。" />
+      </div>
+    )
+  }
+
+  if (!profiles.length) {
+    return (
+      <div className="glass-panel rounded-2xl p-10">
+        <EmptyState icon={BadgeCheckIcon} title="还没有读到 eSIM Profile" description="请确认 lpac 可用，或刷新设备状态后重试。" />
+      </div>
+    )
+  }
+
   return (
-    <div className="rounded-xl border border-slate-100 dark:border-white/5 p-5 flex flex-col gap-3">
-      <div className={cn(
-        "flex size-10 items-center justify-center rounded-lg",
-        variant === "danger" ? "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400" : "bg-slate-50 text-slate-600 dark:bg-white/5 dark:text-slate-400",
-      )}>
-        <Icon className="size-5" />
-      </div>
-      <div>
-        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h4>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{description}</p>
-      </div>
-      <Button
-        type="button"
-        variant={variant === "danger" ? "destructive" : "outline"}
-        size="sm"
-        className="mt-auto w-full"
-        disabled={disabled}
-        onClick={onClick}
-      >
-        {buttonLabel}
-      </Button>
+    <div className="grid gap-3">
+      {profiles.map((profile) => {
+        const isCurrent = Boolean(profile.is_active)
+        const expanded = expandedProfileIccid === profile.iccid
+        const form = profileSmscForms[profile.iccid] ?? { address: profile.smsc_address || "", type: profile.smsc_type || "145" }
+        return (
+          <div key={profile.iccid} className={cn("glass-panel rounded-2xl p-4", isCurrent && "glass-panel-selected")}>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="truncate text-base font-semibold">{profile.display_name}</h3>
+                  <Badge variant={isCurrent ? "default" : "outline"}>{isCurrent ? "当前使用" : "待机"}</Badge>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">ICCID：{profile.iccid || "--"}</p>
+                <p className="text-sm text-muted-foreground">短信中心：{profile.smsc_address ? `${profile.smsc_address},${profile.smsc_type || "145"}` : "未配置"}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={() => setExpandedProfileIccid(expanded ? null : profile.iccid)}>{expanded ? "收起设置" : "短信中心"}</Button>
+                <Button type="button" size="sm" variant={isCurrent ? "secondary" : "outline"} disabled={actionBusy || isCurrent} onClick={() => { void runAction("switch_profile", { device_id: device.id, iccid: profile.iccid }, `切换 ${device.label} 到 ${profile.display_name}`) }}>{isCurrent ? "当前使用中" : "切换到此卡"}</Button>
+              </div>
+            </div>
+            {expanded ? (
+              <div className="mt-4 grid gap-3 rounded-xl border border-white/60 p-3 dark:border-white/10 md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-end">
+                <div className="grid gap-2"><Label htmlFor={`smsc-${profile.iccid}`}>SMSC 号码</Label><Input id={`smsc-${profile.iccid}`} value={form.address} onChange={(event) => { profileSmscDirtyRef.current = true; setProfileSmscForms((current) => ({ ...current, [profile.iccid]: { ...form, address: event.target.value } })) }} /></div>
+                <div className="grid gap-2"><Label htmlFor={`smsc-type-${profile.iccid}`}>类型</Label><Input id={`smsc-type-${profile.iccid}`} value={form.type} onChange={(event) => { profileSmscDirtyRef.current = true; setProfileSmscForms((current) => ({ ...current, [profile.iccid]: { ...form, type: event.target.value } })) }} /></div>
+                <Button type="button" variant="outline" disabled={actionBusy} onClick={() => { void saveProfileSmsc(profile) }}>保存</Button>
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ActionsTab({ device, actionBusy, runAction }: { device: DeviceStatus; actionBusy: boolean; runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void> }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <ActionButton icon={RefreshCwIcon} title="重启基带" desc="重新枚举当前设备" disabled={actionBusy} onClick={() => { void runAction("recover_modem", { device_id: device.id }, `重启 ${device.label} 基带`) }} />
+      <ActionButton icon={MessageSquareTextIcon} title="重启短信服务" desc="重启短信转发服务" disabled={actionBusy} onClick={() => { void runAction("restart_sms", { device_id: device.id }, "重启短信转发") }} />
+      <ActionButton icon={RouterIcon} title="刷新设备" desc="重新读取 Modem 状态" disabled={actionBusy} onClick={() => { void runAction("recover_modem", { device_id: device.id }, `刷新 ${device.label}`) }} />
+    </div>
+  )
+}
+
+function ActionButton({ icon: Icon, title, desc, disabled, onClick }: { icon: typeof CpuIcon; title: string; desc: string; disabled: boolean; onClick: () => void }) {
+  return (
+    <button type="button" disabled={disabled} onClick={onClick} className="glass-panel rounded-2xl p-4 text-left transition-colors hover:bg-white/75 disabled:opacity-50 dark:hover:bg-white/10">
+      <Icon className="size-5 text-muted-foreground" />
+      <div className="mt-3 font-medium">{title}</div>
+      <div className="mt-1 text-sm text-muted-foreground">{desc}</div>
+    </button>
+  )
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-white/60 py-2 last:border-b-0 dark:border-white/10">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-right font-medium">{value}</span>
     </div>
   )
 }

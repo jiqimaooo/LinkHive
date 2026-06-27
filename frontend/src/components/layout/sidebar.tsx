@@ -2,7 +2,6 @@ import { NavLink, useLocation } from "react-router-dom"
 import {
   BadgeCheckIcon,
   BarChart3Icon,
-  CardSimIcon,
   LayoutDashboardIcon,
   MessageSquareTextIcon,
   MonitorIcon,
@@ -12,13 +11,11 @@ import {
   InfoIcon,
   TerminalIcon,
   SendIcon,
-  SmartphoneNfcIcon,
   XIcon,
 } from "lucide-react"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { Logo } from "@/components/shared/logo"
-import { useAppContext } from "@/hooks/app-context"
 
 const MAIN_MENU = [
   {
@@ -30,6 +27,11 @@ const MAIN_MENU = [
     title: "设备管理",
     path: "/devices",
     icon: MonitorIcon,
+    children: [
+      { title: "设备列表", path: "/devices", icon: MonitorIcon },
+      { title: "网络设置", path: "/devices/network", icon: Settings2Icon },
+      { title: "eSIM 管理", path: "/devices/esim", icon: BadgeCheckIcon },
+    ],
   },
   {
     title: "短信管理",
@@ -38,15 +40,7 @@ const MAIN_MENU = [
     children: [
       { title: "收件箱", path: "/sms/inbox", icon: ScrollTextIcon },
       { title: "转发规则", path: "/sms/forwarding", icon: SendIcon },
-    ],
-  },
-  {
-    title: "SIM卡管理",
-    path: "/sim-cards",
-    icon: CardSimIcon,
-    children: [
-      { title: "eSIM Profiles", path: "/sim-cards/profiles", icon: BadgeCheckIcon },
-      { title: "保活任务", path: "/sim-cards/keepalive", icon: BarChart3Icon },
+      { title: "短信保活", path: "/sms/keepalive", icon: BarChart3Icon },
     ],
   },
   {
@@ -54,7 +48,6 @@ const MAIN_MENU = [
     path: "/settings",
     icon: Settings2Icon,
     children: [
-      { title: "模式切换", path: "/settings/mode", icon: SmartphoneNfcIcon },
       { title: "安全设置", path: "/settings/security", icon: ShieldCheckIcon },
       { title: "关于", path: "/settings/about", icon: InfoIcon },
     ],
@@ -74,15 +67,7 @@ export function Sidebar({
   setMobileMenuOpen: (value: boolean) => void
 }) {
   const location = useLocation()
-  const { esimEnabled } = useAppContext()
-
-  // 普通SIM模式下 SIM卡管理只显示保活任务，不显示 Profiles
-  const visibleMenu = MAIN_MENU.map((item) => {
-    if (item.path === "/sim-cards" && !esimEnabled) {
-      return { ...item, children: item.children?.filter((c) => c.path === "/sim-cards/keepalive") }
-    }
-    return item
-  })
+  const visibleMenu = MAIN_MENU
 
   const isParentActive = (item: typeof MAIN_MENU[number]) => {
     if (item.children) {
