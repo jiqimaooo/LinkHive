@@ -206,6 +206,8 @@ export function friendlyActionName(action: ActionName) {
       return "应用网络制式"
     case "apply_network_selection":
       return "应用选网设置"
+    case "apply_ims_settings":
+      return "应用 IMS 设置"
   }
 }
 

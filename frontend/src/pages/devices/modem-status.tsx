@@ -102,6 +102,12 @@ export default function ModemStatusPage() {
               <DetailItem label="运营商" value={`${status?.modem.operator_name || "--"} (${status?.modem.operator_code || "--"})`} />
               <DetailItem label="APN" value={status?.modem.apn || "--"} />
               <div className="col-span-2"><DetailItem label="制式" value={formatCurrentModes(status?.modem.current_modes || "--")} /></div>
+              {status?.modem.ims_supported ? (
+                <>
+                  <DetailItem label="VoLTE" value={status?.modem.volte_supported === false ? "不支持" : status?.modem.volte_enabled ? "已启用" : "未启用"} />
+                  <DetailItem label="VoWiFi" value={status?.modem.vowifi_supported === false ? "不支持" : status?.modem.vowifi_enabled ? "已启用" : "未启用"} />
+                </>
+              ) : null}
             </div>
           </CardContent>
         </Card>

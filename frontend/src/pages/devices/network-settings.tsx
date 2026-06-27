@@ -1,10 +1,11 @@
-import { RadioTowerIcon, SignalIcon, RouterIcon, SendIcon } from "lucide-react"
+import { RadioTowerIcon, SignalIcon, RouterIcon, SendIcon, PhoneIcon } from "lucide-react"
 import { useAppContext } from "@/hooks/app-context"
 import { PageHeader } from "@/components/shared/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger } from "@/components/ui/select"
 import { formatAccessTech, formatCurrentModes } from "@/lib/helpers"
 
@@ -82,6 +83,57 @@ export default function NetworkSettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {status?.modem.ims_supported ? (
+            <Card>
+              <CardHeader><CardTitle className="text-base flex items-center gap-2"><PhoneIcon className="size-4 text-muted-foreground" />IMS 语音</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">控制 VoLTE 和 VoWiFi 开关，修改后将自动重启 ModemManager 生效。</p>
+                {status?.modem.volte_supported !== false ? (
+              <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>VoLTE</Label>
+                      <p className="text-xs text-muted-foreground">通过 LTE 网络进行语音通话</p>
+                    </div>
+                    <Switch
+                      checked={status?.modem.volte_enabled ?? false}
+                      disabled={actionBusy}
+                      onCheckedChange={(checked) => { void runAction("apply_ims_settings", { volte_enabled: checked }, checked ? "开启 VoLTE" : "关闭 VoLTE") }}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between opacity-50">
+                    <div className="space-y-0.5">
+                      <Label>VoLTE</Label>
+                      <p className="text-xs text-muted-foreground">当前模组不支持</p>
+                    </div>
+                    <Switch checked={false} disabled />
+                  </div>
+                )}
+                {status?.modem.vowifi_supported !== false ? (
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>VoWiFi</Label>
+                      <p className="text-xs text-muted-foreground">通过 WiFi 网络进行语音通话</p>
+                    </div>
+                    <Switch
+                      checked={status?.modem.vowifi_enabled ?? false}
+                      disabled={actionBusy}
+                      onCheckedChange={(checked) => { void runAction("apply_ims_settings", { vowifi_enabled: checked }, checked ? "开启 VoWiFi" : "关闭 VoWiFi") }}
+                    />
+                  </div>
+             ) : (
+                  <div className="flex items-center justify-between opacity-50">
+                    <div className="space-y-0.5">
+                      <Label>VoWiFi</Label>
+                      <p className="text-xs text-muted-foreground">当前模组不支持</p>
+                    </div>
+                    <Switch checked={false} disabled />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
         </div>
       </div>
     </div>

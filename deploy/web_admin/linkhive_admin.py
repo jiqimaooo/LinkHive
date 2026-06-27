@@ -710,6 +710,47 @@ def read_modem_signal_dbm(modem: dict[str, str]) -> str:
     return read_at_signal_dbm(modem)
 
 
+def parse_ims_enabled(raw_response: str) -> Optional[bool]:
+    """Parse AT+QCFG="ims" response. Returns True/False/None (unsupported)."""
+    match = re.search(r'\+QCFG:\s*"ims"\s*,\s*(\d)', raw_response)
+    if not match:
+        return None
+    return match.group(1) == "1"
+
+
+def parse_vowifi_enabled(raw_response: str) -> Optional[bool]:
+    """Parse AT+QCFG="vowifi" response. Returns True/False/None (unsupported)."""
+    match = re.search(r'\+QCFG:\s*"vowifi"\s*,\s*(\d)', raw_response)
+    if not match:
+        return None
+    return match.group(1) == "1"
+
+
+def read_ims_status(modem: dict[str, str]) -> dict[str, Any]:
+    """Read VoLTE/VoWiFi status from modem via AT commands."""
+    ims_response = first_at_response(modem, 'AT+QCFG="ims"', 2.0)
+    vowifi_response = first_at_response(modem, 'AT+QCFG="vowifi"', 2.0)
+
+    volte_enabled = parse_ims_enabled(ims_response)
+    vowifi_enabled = parse_vowifi_enabled(vowifi_response)
+
+    # Detect ERROR in vowifi response as explicit "not supported"
+    vowifi_supported = vowifi_enabled is not None
+    if not vowifi_supported and "ERROR" in vowifi_response:
+        vowifi_supported = False
+
+    # If both queries return None, the modem likely doesn't support IMS AT commands
+    ims_supported = volte_enabled is not None or vowifi_supported
+
+    return {
+        "ims_supported": ims_supported,
+        "volte_enabled": volte_enabled if volte_enabled is not None else False,
+        "volte_supported": volte_enabled is not None,
+        "vowifi_enabled": vowifi_enabled if vowifi_enabled is not None else False,
+        "vowifi_supported": vowifi_supported,
+    }
+
+
 def normalize_weekdays(raw_value: Any) -> list[str]:
     if isinstance(raw_value, str):
         values = [item.strip().lower() for item in raw_value.split(",")]
@@ -1867,6 +1908,11 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
 
     signal_dbm = read_modem_signal_dbm(modem)
 
+    try:
+        ims_status = read_ims_status(modem) if not modem_error else {"ims_supported": False, "volte_enabled": False, "vowifi_enabled": False}
+    except Exception:
+        ims_status = {"ims_supported": False, "volte_enabled": False, "vowifi_enabled": False}
+
     sms_messages, sms_error = list_sms()
     if sms_error:
         if not status_message:
@@ -1911,6 +1957,11 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             "current_modes": modem.get("modem.generic.current-modes", "--"),
             "apn": modem.get("modem.3gpp.eps.initial-bearer.settings.apn", "--"),
             "ip_type": modem.get("modem.3gpp.eps.initial-bearer.settings.ip-type", "--"),
+            "ims_supported": ims_status["ims_supported"],
+            "volte_enabled": ims_status["volte_enabled"],
+            "volte_supported": ims_status.get("volte_supported", True),
+            "vowifi_enabled": ims_status["vowifi_enabled"],
+            "vowifi_supported": ims_status.get("vowifi_supported", False),
         },
         "sms_storage": sms_storage,
         "connection": {
@@ -2437,6 +2488,81 @@ def apply_network_selection(ctx: ActionContext, payload: dict[str, Any]) -> None
     )
 
 
+def apply_ims_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    """Enable/disable VoLTE and VoWiFi via AT commands."""
+    volte = payload.get("volte_enabled")
+    vowifi = payload.get("vowifi_enabled")
+
+    modem, modem_error = get_modem_info()
+    if modem_error:
+        raise RuntimeError(f"无法读取基带信息：{modem_error}")
+
+    ports = modem_at_ports(modem)
+    if not ports:
+        raise RuntimeError("未找到可用的 AT 端口")
+
+    port_path = ports[0]
+    changes_made = False
+
+    if volte is not None:
+        volte_val = "1" if volte else "0"
+        ctx.log(f"设置 VoLTE: {'开启' if volte else '关闭'}")
+        response = run_at_command(port_path, f'AT+QCFG="ims",{volte_val}', 2.0)
+        if "OK" in response:
+            ctx.log("VoLTE 设置成功")
+            changes_made = True
+        elif "ERROR" in response:
+            ctx.log(f"VoLTE 设置失败：{response.strip()}", "warning")
+        else:
+            ctx.log(f"VoLTE 响应：{response.strip()}", "warning")
+
+    if vowifi is not None:
+        vowifi_val = "1" if vowifi else "0"
+        ctx.log(f"设置 VoWiFi: {'开启' if vowifi else '关闭'}")
+        # VoWiFi mode: 1=cellular preferred, 2=wifi preferred, 3=wifi only
+        vowifi_mode = "1" if vowifi else ""
+        cmd = f'AT+QCFG="vowifi",{vowifi_val},{vowifi_mode}' if vowifi else f'AT+QCFG="vowifi",{vowifi_val}'
+        response = run_at_command(port_path, cmd, 2.0)
+        if "OK" in response:
+            ctx.log("VoWiFi 设置成功")
+            changes_made = True
+        elif "ERROR" in response:
+            ctx.log(f"VoWiFi 设置失败：{response.strip()}", "warning")
+        else:
+            ctx.log(f"VoWiFi 响应：{response.strip()}", "warning")
+
+    if changes_made:
+        # Persist to config for reapply after modem restart
+        config = app_runtime_config()
+        if volte is not None:
+            config["VOLTE_ENABLED"] = "1" if volte else "0"
+        if vowifi is not None:
+            config["VOWIFI_ENABLED"] = "1" if vowifi else "0"
+        write_env_config(APP_CONFIG_PATH, config)
+        ctx.log("IMS 配置已持久化到 linkhive.conf")
+
+        # IMS settings take effect after modem re-registers.
+        # Use a lightweight restart (ModemManager only) instead of full
+        # recover_modem which does QMI SIM power-cycle and may fail with
+        # "CID allocation failed" on some devices.
+        ctx.log("正在重启 ModemManager 以使 IMS 配置生效…")
+        run_logged_command(ctx, ["systemctl", "restart", "ModemManager"], check=False, success_message="ModemManager 已重启")
+        ctx.sleep(10, "等待基带重新注册网络")
+
+        modem, modem_error = get_modem_info()
+        if modem_error:
+            ctx.log(f"当前还无法读取基带状态：{modem_error}", "warning")
+        else:
+            ctx.log(
+                "当前注册状态："
+                f"{modem.get('modem.3gpp.operator-name', '--')} / "
+                f"{modem.get('modem.3gpp.operator-code', '--')} / "
+                f"{modem.get('modem.3gpp.registration-state', '--')}"
+            )
+    else:
+        ctx.log("未做任何更改", "warning")
+
+
 def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
     task_id = str(payload.get("task_id", "")).strip()
     if not task_id:
@@ -2598,6 +2724,9 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
         return
     if action == "apply_network_selection":
         apply_network_selection(ctx, payload)
+        return
+    if action == "apply_ims_settings":
+        apply_ims_settings(ctx, payload)
         return
     if action == KEEPALIVE_ACTION_NAME:
         run_keepalive_task(ctx, payload)

@@ -71,6 +71,11 @@ export type StatusData = {
     current_modes: string
     apn: string
     ip_type: string
+    ims_supported?: boolean
+    volte_enabled?: boolean
+    volte_supported?: boolean
+    vowifi_enabled?: boolean
+    vowifi_supported?: boolean
   }
   sms_storage?: {
     device_count: number
@@ -197,6 +202,7 @@ export type ActionName =
   | "save_notifications"
   | "apply_radio_mode"
   | "apply_network_selection"
+  | "apply_ims_settings"
 
 export type ActionSnapshot = {
   ok: boolean

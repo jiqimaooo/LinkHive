@@ -42,6 +42,7 @@ type OverviewRow = {
   label: string
   value: string
   mono?: boolean
+  muted?: boolean
   preserveLineBreaks?: boolean
 }
 
@@ -86,11 +87,12 @@ export default function DashboardPage() {
   ]
   const networkOverviewRows: OverviewRow[] = [
     { label: "当前运营商", value: operatorName },
-    { label: "运营商代码", value: displayValue(status?.modem.operator_code), mono: true },
-    { label: "网络制式", value: networkType },
+
     { label: "信号强度", value: signalDisplayValue },
     { label: "注册状态", value: formatRegistrationState(status?.modem.registration || "--") },
     { label: "漫游状态", value: device?.roaming ? "漫游" : "未漫游" },
+    { label: "VoLTE", value: status?.modem.volte_supported === false ? "不支持" : status?.modem.volte_enabled ? "已启用" : "未启用", muted: status?.modem.volte_supported === false },
+    { label: "VoWiFi", value: status?.modem.vowifi_supported === false ? "不支持" : status?.modem.vowifi_enabled ? "已启用" : "未启用", muted: status?.modem.vowifi_supported === false },
   ]
 
   return (
@@ -265,6 +267,7 @@ function OverviewItem({
   label,
   value,
   mono = false,
+  muted = false,
   preserveLineBreaks = false,
 }: OverviewRow) {
   return (
@@ -272,9 +275,10 @@ function OverviewItem({
       <dt className={cn("text-xs font-medium leading-5", MUTED_TEXT)}>{label}</dt>
       <dd
         className={cn(
-          "min-w-0 text-right text-sm font-medium leading-5 text-slate-900 dark:text-slate-100",
+          "min-w-0 text-right text-sm font-medium leading-5",
+          muted ? "text-slate-400 dark:text-slate-500" : "text-slate-900 dark:text-slate-100",
           mono && "font-mono tabular-nums",
-          preserveLineBreaks ? "whitespace-pre-line break-words" : "truncate",
+          preserveLineBreaks ?"whitespace-pre-line break-words" : "truncate",
         )}
         title={preserveLineBreaks ? undefined : value}
       >
