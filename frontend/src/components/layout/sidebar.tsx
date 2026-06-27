@@ -10,7 +10,6 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   InfoIcon,
-  SmartphoneIcon,
   TerminalIcon,
   SendIcon,
   SmartphoneNfcIcon,
@@ -31,10 +30,6 @@ const MAIN_MENU = [
     title: "设备管理",
     path: "/devices",
     icon: MonitorIcon,
-    children: [
-      { title: "基带状态", path: "/devices/modem", icon: SmartphoneIcon },
-      { title: "网络设置", path: "/devices/network", icon: Settings2Icon },
-    ],
   },
   {
     title: "短信管理",

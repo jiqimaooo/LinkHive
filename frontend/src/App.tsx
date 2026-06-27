@@ -10,8 +10,7 @@ import { TopNav } from "@/components/layout/top-nav"
 
 import LoginPage from "@/pages/login"
 import DashboardPage from "@/pages/dashboard"
-import ModemStatusPage from "@/pages/devices/modem-status"
-import NetworkSettingsPage from "@/pages/devices/network-settings"
+import DevicesPage from "@/pages/devices"
 import SmsInboxPage from "@/pages/sms/inbox"
 import SmsForwardingPage from "@/pages/sms/forwarding"
 import ProfilesPage from "@/pages/sim-cards/profiles"
@@ -33,9 +32,7 @@ function AppLayout() {
           <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-[96rem] flex-col gap-4 px-4 pb-8 pt-4 sm:px-6 sm:pb-10 lg:min-h-full lg:px-0 lg:pb-28 lg:pt-0">
             <Routes>
               <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/devices" element={<Navigate to="/devices/modem" replace />} />
-              <Route path="/devices/modem" element={<ModemStatusPage />} />
-              <Route path="/devices/network" element={<NetworkSettingsPage />} />
+              <Route path="/devices" element={<DevicesPage />} />
               <Route path="/sms" element={<Navigate to="/sms/inbox" replace />} />
               <Route path="/sms/inbox" element={<SmsInboxPage />} />
               <Route path="/sms/forwarding" element={<SmsForwardingPage />} />
