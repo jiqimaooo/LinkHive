@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +23,7 @@ from notification_utils import (  # noqa: E402
     load_notification_targets,
     send_apprise_notification,
 )
+from modem_direct import list_sms_via_at  # noqa: E402
 
 
 CONFIG_PATH = Path(os.environ.get("SMS_FORWARDER_CONFIG", "/etc/sms-forwarder.conf"))
@@ -51,26 +51,6 @@ def load_env_file(path: Path) -> dict[str, str]:
     return data
 
 
-def run_mmcli(args: list[str]) -> str:
-    cmd = ["mmcli", *args]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    return result.stdout
-
-
-def parse_sms_paths(raw: str) -> list[str]:
-    return re.findall(r"(/org/freedesktop/ModemManager1/SMS/\d+)", raw)
-
-
-def parse_kv(raw: str) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for line in raw.splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        parsed[key.strip()] = value.strip()
-    return parsed
-
-
 def ensure_state() -> dict[str, object]:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not STATE_PATH.exists():
@@ -93,7 +73,7 @@ def save_state(state: dict[str, object]) -> None:
     tmp.replace(STATE_PATH)
 
 
-def decode_mmcli_escaped_text(raw_text: str) -> str:
+def decode_escaped_text(raw_text: str) -> str:
     if "\\" not in raw_text:
         return raw_text
     try:
@@ -121,23 +101,27 @@ def maybe_decode_base64(raw_text: str) -> str:
 
 
 def normalize_sms_text(raw_text: str) -> str:
-    text = decode_mmcli_escaped_text(raw_text)
+    text = decode_escaped_text(raw_text)
     return maybe_decode_base64(text)
 
 
-def fetch_sms_detail(path: str) -> dict[str, str]:
-    raw = run_mmcli(["-s", path, "-K"])
-    kv = parse_kv(raw)
-    text = kv.get("sms.content.text", "")
-    data = kv.get("sms.content.data", "")
-    return {
-        "path": path,
-        "state": kv.get("sms.properties.state", ""),
-        "number": kv.get("sms.content.number", ""),
-        "text": normalize_sms_text(text or data),
-        "timestamp": format_beijing_timestamp(kv.get("sms.properties.timestamp", "")),
-        "storage": kv.get("sms.properties.storage", ""),
-    }
+def fetch_sms_messages(device_id: str) -> tuple[list[dict[str, str]], str]:
+    messages, error = list_sms_via_at(device_id)
+    if error:
+        return [], error
+    normalized: list[dict[str, str]] = []
+    for item in messages:
+        normalized.append(
+            {
+                "path": f"{item.get('device_id', device_id)}:{item.get('id', '')}",
+                "state": item.get("state", ""),
+                "number": item.get("number", ""),
+                "text": normalize_sms_text(item.get("text", "")),
+                "timestamp": format_beijing_timestamp(item.get("timestamp", "")),
+                "storage": item.get("storage", ""),
+            }
+        )
+    return normalized, ""
 
 
 def build_sms_fingerprint(detail: dict[str, str]) -> str:
@@ -173,13 +157,16 @@ def main() -> int:
 
     while True:
         try:
-            sms_list_raw = run_mmcli(["-m", modem_id, "--messaging-list-sms"])
-            sms_paths = parse_sms_paths(sms_list_raw)
+            messages, read_error = fetch_sms_messages(modem_id)
+            if read_error:
+                LOG.warning("read sms failed: %s", read_error)
+                time.sleep(POLL_INTERVAL)
+                continue
             current_seen = set(seen_sms)
             changed = False
 
-            for sms_path in sms_paths:
-                detail = fetch_sms_detail(sms_path)
+            for detail in messages:
+                sms_path = detail["path"]
                 fingerprint = build_sms_fingerprint(detail)
 
                 if fingerprint in seen_fingerprints:
@@ -204,8 +191,6 @@ def main() -> int:
                 state["seen_sms"] = sorted(seen_sms)
                 state["seen_fingerprints"] = sorted(seen_fingerprints)[-200:]
                 save_state(state)
-        except subprocess.CalledProcessError as exc:
-            LOG.error("mmcli failed: %s", exc.stderr.strip() if exc.stderr else exc)
         except Exception as exc:
             LOG.exception("unexpected failure: %s", exc)
 

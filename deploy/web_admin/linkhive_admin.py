@@ -46,12 +46,12 @@ from notification_utils import (  # noqa: E402
     save_notification_targets_in_config,
     send_apprise_notification,
 )
-from modem_direct import enumerate_direct_modems, get_direct_modem_info  # noqa: E402
+from modem_direct import at_command, enumerate_direct_modems, get_direct_modem_info, list_sms_via_at, send_sms_via_at  # noqa: E402
 
 
 HOST = os.environ.get("FOURG_WIFI_ADMIN_HOST", "0.0.0.0")
 PORT = int(os.environ.get("FOURG_WIFI_ADMIN_PORT", "8080"))
-MODEM_BACKEND = os.environ.get("LINKHIVE_MODEM_BACKEND", "direct").strip().lower()
+MODEM_BACKEND = "direct"
 NOTIFICATION_CONFIG_PATH = Path("/etc/sms-forwarder.conf")
 SMS_FORWARDER_SERVICE = "sms-forwarder.service"
 APP_CONFIG_PATH = Path("/etc/linkhive.conf")
@@ -181,13 +181,82 @@ def command_output_text(result: subprocess.CompletedProcess[str]) -> str:
 def is_transient_modem_error(message: str) -> bool:
     normalized = str(message or "").strip().lower()
     transient_markers = (
+        "modem is not enabled",
         "modem not enabled yet",
+        "not yet enabled",
         "not enabled yet",
         "not enabled",
         "not registered",
+        "modem is not registered",
+        "could not find a registered modem",
         "operation only allowed in",
     )
     return any(marker in normalized for marker in transient_markers)
+
+
+def is_positive_capability_hint(value: Any) -> bool:
+    normalized = normalize_dashboard_value(value).strip().lower()
+    if not normalized:
+        return False
+    if normalized in {
+        "0",
+        "false",
+        "no",
+        "none",
+        "unknown",
+        "unsupported",
+        "not supported",
+        "unavailable",
+        "not available",
+        "disabled",
+        "不支持",
+        "未支持",
+        "不可用",
+        "未启用",
+    }:
+        return False
+    if normalized in {"1", "true", "yes", "supported", "available", "enabled", "euicc", "esim"}:
+        return True
+    return bool(re.fullmatch(r"\d{20,40}", normalized))
+
+
+def has_esim_capability_hint(modem: dict[str, str], sim_info: Optional[dict[str, str]] = None) -> bool:
+    sim_info = sim_info or {}
+    return any(
+        is_positive_capability_hint(value)
+        for value in (
+            sim_info.get("sim.properties.eid"),
+            modem.get("sim.properties.eid"),
+            modem.get("direct.sim.eid"),
+            modem.get("linkhive.euicc"),
+        )
+    )
+
+
+def modem_ready_for_esim_profile_probe(modem: dict[str, str]) -> bool:
+    state = first_dashboard_value(modem.get("modem.generic.state")).lower()
+    registration = first_dashboard_value(modem.get("modem.3gpp.registration-state")).lower()
+    if state in {"disabled", "failed", "locked", "detected"}:
+        return False
+    return registration in {"home", "roaming"} or state in {"enabled", "registered", "connected"}
+
+
+def device_ready_for_sms_read(device: dict[str, Any]) -> bool:
+    if device.get("source") == "at_probe":
+        return False
+    if not device.get("capabilities", {}).get("sms_supported"):
+        return False
+    state = str(device.get("state") or "").strip().lower()
+    registration = str(device.get("registration") or "").strip().lower()
+    if state in {"disabled", "failed", "locked", "detected"}:
+        return False
+    return registration in {"home", "roaming"} or state in {"enabled", "registered", "connected"}
+
+
+def clear_profile_cache_error() -> None:
+    global PROFILE_CACHE_ERROR
+    with PROFILE_CACHE_LOCK:
+        PROFILE_CACHE_ERROR = ""
 
 
 def format_command(args: list[str]) -> str:
@@ -225,7 +294,7 @@ def wait_for_qmi_device(ctx: "ActionContext", timeout_seconds: int = 12) -> str:
     raise RuntimeError("等待 QMI 设备节点超时，未找到 /dev/wwan*qmi* 或 /dev/cdc-wdm*")
 
 
-def parse_mmcli_kv(raw: str) -> dict[str, str]:
+def parse_key_value_output(raw: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for line in raw.splitlines():
         if ":" not in line:
@@ -235,7 +304,7 @@ def parse_mmcli_kv(raw: str) -> dict[str, str]:
     return parsed
 
 
-def decode_mmcli_escaped_text(raw_text: str) -> str:
+def decode_escaped_text(raw_text: str) -> str:
     if "\\" not in raw_text:
         return raw_text
     try:
@@ -261,7 +330,7 @@ def maybe_decode_base64(raw_text: str) -> str:
 
 
 def normalize_sms_text(raw_text: str) -> str:
-    return maybe_decode_base64(decode_mmcli_escaped_text(raw_text))
+    return maybe_decode_base64(decode_escaped_text(raw_text))
 
 
 def format_beijing_timestamp(raw_timestamp: str) -> str:
@@ -714,7 +783,7 @@ def parse_at_value(raw_response: str, patterns: list[str]) -> str:
 
 
 def read_raw_at_snapshot(port_path: str) -> dict[str, Any]:
-    """直接读取 AT 口，用于 ModemManager 尚未枚举 modem 时识别实体 SIM/eUICC。"""
+    """直接读取 AT 口，用于 QMI 尚未就绪时识别实体 SIM/eUICC。"""
     commands = {
         "at": "AT",
         "identity": "ATI",
@@ -824,29 +893,6 @@ def read_at_signal_dbm(modem: dict[str, str]) -> str:
 def read_modem_signal_dbm(modem: dict[str, str], device_id: str = "") -> str:
     if first_dashboard_value(modem.get("linkhive.direct")):
         return first_dashboard_value(modem.get("direct.signal.dbm")) or "--"
-    result = run_command(["mmcli", "-m", modem_selector_for_device_id(device_id), "--signal-get", "-K"], check=False)
-    if result.returncode == 0:
-        metrics = parse_mmcli_kv(result.stdout)
-        access_tech = modem.get("modem.generic.access-technologies.value[1]", "--")
-        normalized_access_tech = str(access_tech or "").strip().lower()
-        if "lte" in normalized_access_tech:
-            preferred_keys = ["modem.signal.lte.rsrp", "modem.signal.lte.rssi"]
-        elif "umts" in normalized_access_tech or "3g" in normalized_access_tech:
-            preferred_keys = ["modem.signal.umts.rscp", "modem.signal.umts.rssi"]
-        elif "gsm" in normalized_access_tech or "2g" in normalized_access_tech:
-            preferred_keys = ["modem.signal.gsm.rssi"]
-        else:
-            preferred_keys = [
-                "modem.signal.lte.rsrp",
-                "modem.signal.lte.rssi",
-                "modem.signal.umts.rscp",
-                "modem.signal.umts.rssi",
-                "modem.signal.gsm.rssi",
-            ]
-        for key in preferred_keys:
-            signal_dbm = normalize_signal_dbm(metrics.get(key, ""))
-            if signal_dbm != "--":
-                return signal_dbm
     return read_at_signal_dbm(modem)
 
 
@@ -1536,61 +1582,20 @@ def modem_id_from_path(path: str) -> str:
 
 
 def list_modem_paths() -> list[str]:
-    if MODEM_BACKEND == "direct":
-        return []
-    result = run_command(["mmcli", "-L"], check=False)
-    if result.returncode != 0:
-        return []
-    return re.findall(r"(/org/freedesktop/ModemManager1/Modem/\d+)", result.stdout)
+    return []
 
 
 def modem_selector_for_device_id(device_id: str = "") -> str:
     target = str(device_id or "").strip()
-    if MODEM_BACKEND == "direct":
-        return target.removeprefix("imei-") if target.startswith("imei-") else target
-    if not target:
-        return "any"
-    for modem, _error in enumerate_modem_infos():
-        if modem_device_id(modem) == target:
-            return str(modem.get("linkhive.modem_selector") or "any")
-    return target.removeprefix("modem-") if target.startswith("modem-") else target
+    return target.removeprefix("imei-") if target.startswith("imei-") else target
 
 
 def get_modem_info(device_id: str = "") -> tuple[dict[str, str], Optional[str]]:
-    if MODEM_BACKEND == "direct":
-        return get_direct_modem_info()
-    selector = modem_selector_for_device_id(device_id)
-    result = run_command(["mmcli", "-m", selector, "-K"], check=False)
-    if result.returncode != 0:
-        error = command_output_text(result) or "无法读取基带状态"
-        return {}, error
-    modem = parse_mmcli_kv(result.stdout)
-    if selector != "any":
-        modem["linkhive.modem_selector"] = selector
-        modem["linkhive.modem_path"] = f"/org/freedesktop/ModemManager1/Modem/{selector}" if selector.isdigit() else selector
-    return modem, None
+    return get_direct_modem_info()
 
 
 def enumerate_modem_infos() -> list[tuple[dict[str, str], Optional[str]]]:
-    if MODEM_BACKEND == "direct":
-        return enumerate_direct_modems()
-    modem_paths = list_modem_paths()
-    if not modem_paths:
-        modem, error = get_modem_info("")
-        return [(modem, error)] if modem or error else []
-
-    items: list[tuple[dict[str, str], Optional[str]]] = []
-    for modem_path in modem_paths:
-        selector = modem_id_from_path(modem_path)
-        result = run_command(["mmcli", "-m", selector, "-K"], check=False)
-        if result.returncode != 0:
-            items.append(({}, command_output_text(result) or f"无法读取基带 {selector}"))
-            continue
-        modem = parse_mmcli_kv(result.stdout)
-        modem["linkhive.modem_path"] = modem_path
-        modem["linkhive.modem_selector"] = selector
-        items.append((modem, None))
-    return items
+    return enumerate_direct_modems()
 
 
 def modem_device_id(modem: dict[str, str]) -> str:
@@ -1606,43 +1611,7 @@ def modem_device_id(modem: dict[str, str]) -> str:
 
 
 def list_sms(device_id: str = "") -> tuple[list[dict[str, str]], Optional[str]]:
-    if MODEM_BACKEND == "direct":
-        return [], None
-    selector = modem_selector_for_device_id(device_id)
-    result = run_command(["mmcli", "-m", selector, "--messaging-list-sms"], check=False)
-    if result.returncode != 0:
-        error = command_output_text(result) or "无法读取短信列表"
-        return [], error
-
-    paths = re.findall(r"(/org/freedesktop/ModemManager1/SMS/\d+)", result.stdout)
-    messages: list[dict[str, str]] = []
-    for path in paths:
-        detail = run_command(["mmcli", "-s", path, "-K"], check=False)
-        if detail.returncode != 0:
-            continue
-        kv = parse_mmcli_kv(detail.stdout)
-        state = kv.get("sms.properties.state", "")
-        sms_id_match = re.search(r"/SMS/(\d+)$", path)
-        messages.append(
-            {
-                "id": sms_id_match.group(1) if sms_id_match else "",
-                "number": kv.get("sms.content.number", ""),
-                "text": normalize_sms_text(kv.get("sms.content.text", "") or kv.get("sms.content.data", "")),
-                "timestamp": format_beijing_timestamp(kv.get("sms.properties.timestamp", "")),
-                "state": state,
-                "device_id": device_id,
-                "state_label": {
-                    "received": "已接收",
-                    "receiving": "接收中",
-                    "sent": "已发送",
-                    "sending": "发送中",
-                    "stored": "已存储",
-                }.get(state, state or "未知"),
-            }
-        )
-
-    messages.sort(key=lambda item: int(item["id"] or "0"), reverse=True)
-    return messages, None
+    return list_sms_via_at(device_id)
 
 
 def cpms_set_command(memories: list[str]) -> str:
@@ -1687,10 +1656,6 @@ def read_sms_storage_counts(modem: dict[str, str], fallback_device_count: int) -
     return {"device_count": fallback_device_count, "sim_count": 0}
 
 
-def parse_sms_paths(raw: str) -> list[str]:
-    return re.findall(r"(/org/freedesktop/ModemManager1/SMS/\d+)", raw)
-
-
 def service_state(name: str) -> str:
     result = run_command(["systemctl", "is-active", name], check=False)
     return command_output_text(result) or "unknown"
@@ -1698,7 +1663,7 @@ def service_state(name: str) -> str:
 
 def get_connection_info() -> dict[str, str]:
     result = run_command(["nmcli", "connection", "show", "modem"], check=False)
-    return parse_mmcli_kv(result.stdout) if result.returncode == 0 else {}
+    return parse_key_value_output(result.stdout) if result.returncode == 0 else {}
 
 
 def normalize_dashboard_value(raw_value: Any) -> str:
@@ -1715,18 +1680,13 @@ def first_dashboard_value(*values: Any) -> str:
 
 
 def get_modem_sim_info(modem: dict[str, str]) -> dict[str, str]:
-    if first_dashboard_value(modem.get("linkhive.direct")):
-        return {
-            "sim.properties.iccid": first_dashboard_value(modem.get("direct.sim.iccid")),
-            "sim.properties.imsi": first_dashboard_value(modem.get("direct.sim.imsi")),
-            "sim.properties.operator-code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
-            "sim.properties.operator-name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
-        }
-    sim_path = first_dashboard_value(modem.get("modem.generic.sim"))
-    if not sim_path:
-        return {}
-    result = run_command(["mmcli", "-i", sim_path, "-K"], check=False)
-    return parse_mmcli_kv(result.stdout) if result.returncode == 0 else {}
+    return {
+        "sim.properties.iccid": first_dashboard_value(modem.get("direct.sim.iccid")),
+        "sim.properties.imsi": first_dashboard_value(modem.get("direct.sim.imsi")),
+        "sim.properties.eid": first_dashboard_value(modem.get("direct.sim.eid")),
+        "sim.properties.operator-code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
+        "sim.properties.operator-name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
+    }
 
 
 def get_active_cellular_interface() -> str:
@@ -1895,10 +1855,11 @@ def build_device_status(
         sim_info.get("sim.identifier"),
     )
     eid = first_dashboard_value(sim_info.get("sim.properties.eid"))
-    esim_supported = bool(lpac_installed and (device_profiles or eid))
+    has_euicc_hint = has_esim_capability_hint(modem, sim_info)
+    esim_supported = bool(lpac_installed and (device_profiles or has_euicc_hint))
     if active_profile and active_profile.get("iccid") == iccid:
         active_sim_kind = "esim"
-    elif eid:
+    elif has_euicc_hint:
         active_sim_kind = "esim"
     elif device_profiles:
         active_sim_kind = "unknown"
@@ -1908,7 +1869,7 @@ def build_device_status(
 
     return {
         "id": device_id,
-        "source": "direct_at" if first_dashboard_value(modem.get("linkhive.direct")) else "modemmanager",
+        "source": first_dashboard_value(modem.get("linkhive.direct.source"), "direct_at") if first_dashboard_value(modem.get("linkhive.direct")) else "direct",
         "probe": {
             "port": first_dashboard_value(modem.get("linkhive.at_port")),
             "qmi_path": first_dashboard_value(modem.get("linkhive.qmi_path")),
@@ -1955,7 +1916,7 @@ def build_device_status(
             "sms_supported": True,
             "data_supported": True,
             "esim_supported": esim_supported,
-            "lpac_supported": lpac_installed,
+            "lpac_supported": bool(lpac_installed and esim_supported),
         },
         "profiles": device_profiles,
         "connection": {
@@ -1972,6 +1933,7 @@ def build_raw_probe_device(snapshot: dict[str, Any], lpac_installed: bool) -> di
     iccid = str(snapshot.get("iccid") or "").strip()
     imsi = str(snapshot.get("imsi") or "").strip()
     port = str(snapshot.get("port") or "").strip()
+    has_euicc_hint = is_positive_capability_hint(snapshot.get("eid")) or is_positive_capability_hint(snapshot.get("euicc"))
     device_id = f"raw-sim-{iccid}" if iccid else f"raw-port-{Path(port).name or uuid.uuid4().hex[:8]}"
     model = str(snapshot.get("model") or "").strip()
     manufacturer = str(snapshot.get("manufacturer") or "").strip()
@@ -2011,13 +1973,13 @@ def build_raw_probe_device(snapshot: dict[str, Any], lpac_installed: bool) -> di
         "interface_name": "",
         "ip_address": "",
         "roaming": False,
-        "sim_label": "实体 eSIM / SIM 已识别" if snapshot.get("sim_present") else "未确认 SIM",
-        "active_sim_kind": "unknown",
+        "sim_label": "SIM 已识别" if snapshot.get("sim_present") else "未确认 SIM",
+        "active_sim_kind": "esim" if has_euicc_hint else "unknown",
         "capabilities": {
             "sms_supported": False,
             "data_supported": False,
-            "esim_supported": lpac_installed,
-            "lpac_supported": lpac_installed,
+            "esim_supported": bool(lpac_installed and has_euicc_hint),
+            "lpac_supported": bool(lpac_installed and has_euicc_hint),
         },
         "profiles": [],
         "connection": {
@@ -2043,8 +2005,11 @@ def build_devices_snapshot(profiles: list[dict[str, Any]], lpac_installed: bool)
 
 
 def device_status_for_id(device_id: str = "") -> dict[str, Any]:
-    cached_profiles, _cache_error = get_cached_profiles()
-    devices = build_devices_snapshot(cached_profiles, os.path.exists("/opt/lpac/lpac"))
+    modem, _modem_error = get_modem_info(device_id)
+    sim_info = get_modem_sim_info(modem) if modem else {}
+    cached_profiles, _cache_error = get_profile_cache_snapshot()
+    profiles = cached_profiles if has_esim_capability_hint(modem, sim_info) else []
+    devices = build_devices_snapshot(profiles, os.path.exists("/opt/lpac/lpac"))
     if not devices:
         return {}
     target = str(device_id or "").strip()
@@ -2103,39 +2068,6 @@ def wait_for_modem_network_ready(
     return False, f"等待网络可用超时，已等待 {timeout_seconds} 秒"
 
 
-def escape_mmcli_sms_value(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{escaped}'"
-
-
-def create_sms(ctx: ActionContext, number: str, text: str, device_id: str = "") -> str:
-    request_arg = (
-        "--messaging-create-sms="
-        f"number={escape_mmcli_sms_value(number)},text={escape_mmcli_sms_value(text)}"
-    )
-    result = run_logged_command(
-        ctx,
-        ["mmcli", "-m", modem_selector_for_device_id(device_id), request_arg],
-        failure_prefix="创建短信对象失败：",
-    )
-    match = re.search(r"(/org/freedesktop/ModemManager1/SMS/\d+)", result.stdout or result.stderr or "")
-    if not match:
-        raise RuntimeError("创建短信对象失败：未返回短信路径")
-    sms_path = match.group(1)
-    ctx.log(f"短信对象已创建：{sms_path}")
-    return sms_path
-
-
-def delete_sms(ctx: ActionContext, sms_path: str, device_id: str = "") -> None:
-    if not sms_path:
-        return
-    run_logged_command(
-        ctx,
-        ["mmcli", "-m", modem_selector_for_device_id(device_id), f"--messaging-delete-sms={sms_path}"],
-        check=False,
-    )
-
-
 def send_sms_message(
     ctx: ActionContext,
     number: str,
@@ -2145,16 +2077,12 @@ def send_sms_message(
     success_message: str,
     failure_prefix: str,
 ) -> None:
-    sms_path = create_sms(ctx, number, text, device_id)
+    ctx.log(f"通过直连基带发送短信：{number}")
     try:
-        run_logged_command(
-            ctx,
-            ["mmcli", "-s", sms_path, "--send"],
-            failure_prefix=failure_prefix,
-            success_message=success_message,
-        )
-    finally:
-        delete_sms(ctx, sms_path, device_id)
+        send_sms_via_at(number, text)
+    except Exception as exc:
+        raise RuntimeError(f"{failure_prefix}{exc}") from exc
+    ctx.log(success_message)
 
 
 def send_keepalive_sms(ctx: ActionContext, number: str, text: str, device_id: str = "") -> None:
@@ -2232,6 +2160,7 @@ def notify_keepalive_result(
 
 
 def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
+    global PROFILE_CACHE_ERROR
     status_message = ""
     errors: list[str] = []
     notification_config = read_env_config(NOTIFICATION_CONFIG_PATH)
@@ -2253,20 +2182,21 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             errors.append(modem_error)
 
     sim_info_for_profile_probe = get_modem_sim_info(modem) if modem else {}
-    has_euicc_hint = bool(first_dashboard_value(sim_info_for_profile_probe.get("sim.properties.eid")))
-    cached_profiles, cache_error = get_profile_cache_snapshot()
+    has_euicc_hint = has_esim_capability_hint(modem, sim_info_for_profile_probe) if modem else False
+    cached_profiles, _cache_error = get_profile_cache_snapshot()
     profiles = cached_profiles if has_euicc_hint else []
-    should_read_profiles = bool(lpac_installed and has_euicc_hint)
+    should_read_profiles = bool(lpac_installed and has_euicc_hint and modem_ready_for_esim_profile_probe(modem))
 
     if should_read_profiles:
         try:
             profiles = refresh_profile_cache(force=True) if refresh_profiles else get_cached_profiles()[0]
-            if cache_error and not profiles:
-                errors.append(f"读取 eSIM 列表失败：{cache_error}")
         except Exception as exc:
             profiles = cached_profiles
-            if has_euicc_hint:
-                errors.append(f"读取 eSIM 列表失败：{exc}")
+            with PROFILE_CACHE_LOCK:
+                PROFILE_CACHE_ERROR = str(exc)
+    else:
+        profiles = []
+        clear_profile_cache_error()
 
     try:
         profiles = attach_profile_smsc_config(profiles)
@@ -2319,7 +2249,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
     sms_errors: list[str] = []
     if devices:
         for device in devices:
-            if device.get("source") == "at_probe":
+            if not device_ready_for_sms_read(device):
                 continue
             device_messages, sms_error = list_sms(str(device.get("id", "")))
             if sms_error:
@@ -2327,7 +2257,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
                     sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
                 continue
             sms_messages.extend(device_messages)
-    else:
+    elif not modem_error:
         sms_messages, sms_error = list_sms()
         if sms_error and not is_transient_modem_error(sms_error):
             sms_errors.append(sms_error)
@@ -2337,7 +2267,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         errors.extend(sms_errors)
     sms_messages.sort(key=lambda item: int(item.get("id") or "0"), reverse=True)
     sms_storage = read_sms_storage_counts(modem, len(sms_messages))
-    # KPI 展示以 ModemManager 当前可读取的短信列表为准，避免 ME/SM 存储计数重复相加。
+    # KPI 展示以当前可读取的短信列表为准，避免 ME/SM 存储计数重复相加。
     sms_storage["readable_count"] = len(sms_messages)
 
     try:
@@ -2400,7 +2330,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         "connection": connection_payload,
         "dashboard": dashboard,
         "services": {
-            "modemmanager": "active" if MODEM_BACKEND == "direct" and not modem_error else service_state("ModemManager"),
+            "modemmanager": "active" if not modem_error else "inactive",
             "sms_forwarder": service_state(SMS_FORWARDER_SERVICE),
             "web_admin": service_state("linkhive-admin.service"),
         },
@@ -2494,75 +2424,23 @@ def run_logged_command(
 def recover_modem(ctx: ActionContext, payload: Optional[dict[str, Any]] = None) -> None:
     device_id = str((payload or {}).get("device_id", "")).strip()
     ctx.log("开始恢复基带")
-    qmi_device: Optional[str] = None
-    try:
-        run_logged_command(ctx, ["systemctl", "stop", "ModemManager"], success_message="ModemManager 已停止")
-        ctx.sleep(3, "等待 ModemManager 完全退出")
-        qmi_device = wait_for_qmi_device(ctx)
-        run_logged_command(
-            ctx,
-            ["qmicli", "-d", qmi_device, "--uim-sim-power-off=1"],
-            success_message="已下发 SIM 断电",
-        )
-        ctx.sleep(3, "等待 SIM 断电完成")
-        qmi_device = wait_for_qmi_device(ctx)
-        run_logged_command(
-            ctx,
-            ["qmicli", "-d", qmi_device, "--uim-sim-power-on=1"],
-            success_message="已下发 SIM 上电",
-        )
-        ctx.sleep(3, "等待 SIM 重新上电")
-    finally:
-        start_result = run_logged_command(
-            ctx,
-            ["systemctl", "start", "ModemManager"],
-            check=False,
-            success_message="ModemManager 已启动",
-        )
-        if start_result.returncode != 0:
-            ctx.log("ModemManager 启动失败，后续状态读取可能继续失败", "warning")
-
-        ctx.sleep(10, "等待基带重新枚举")
-        ctx.log("重新触发 USB/串口设备事件，避免 ModemManager 重启后漏扫 Quectel 端口")
-        trigger_paths = [
-            *sorted(glob("/sys/class/tty/ttyUSB*")),
-            *sorted(glob("/sys/class/usbmisc/cdc-wdm*")),
-            *sorted(glob("/sys/class/net/wwan*")),
-        ]
-        if trigger_paths:
-            run_logged_command(
-                ctx,
-                ["udevadm", "trigger", "--action=add", *trigger_paths],
-                check=False,
-                success_message="已重新触发设备枚举事件",
-            )
-            run_logged_command(ctx, ["udevadm", "settle", "--timeout=10"], check=False)
-        else:
-            ctx.log("未找到可重新触发的 ttyUSB/cdc-wdm/wwan 设备节点", "warning")
-        run_logged_command(
-            ctx,
-            ["mmcli", "--scan-modems"],
-            check=False,
-            success_message="已请求 ModemManager 重新扫描 modem",
-        )
-        ctx.sleep(8, "等待 ModemManager 完成扫描")
-        run_logged_command(
-            ctx,
-            ["systemctl", "restart", SMS_FORWARDER_SERVICE],
-            check=False,
-            success_message="短信转发服务已尝试重启",
-        )
-
     modem, modem_error = get_modem_info(device_id)
     if modem_error:
         ctx.log(f"当前还无法读取基带状态：{modem_error}", "warning")
     else:
+        ctx.log("直连基带探测完成")
         ctx.log(
             "当前注册状态："
             f"{modem.get('modem.3gpp.operator-name', '--')} / "
             f"{modem.get('modem.3gpp.operator-code', '--')} / "
             f"{modem.get('modem.3gpp.registration-state', '--')}"
         )
+    run_logged_command(
+        ctx,
+        ["systemctl", "restart", SMS_FORWARDER_SERVICE],
+        check=False,
+        success_message="短信转发服务已尝试重启",
+    )
 
 
 def apply_apn_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
@@ -2572,24 +2450,16 @@ def apply_apn_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
     password = str(payload.get("password", "")).strip()
     ip_type = str(payload.get("ip_type", "ipv4v6")).strip() or "ipv4v6"
 
-    settings_parts = [f"ip-type={ip_type}"]
-    if apn:
-        settings_parts.insert(0, f"apn={apn}")
-    if username:
-        settings_parts.append(f"user={username}")
-    if password:
-        settings_parts.append(f"password={password}")
-
     ctx.log("开始保存 APN 配置")
-    mm = run_logged_command(
-        ctx,
-        ["mmcli", "-m", modem_selector_for_device_id(device_id), f"--3gpp-set-initial-eps-bearer-settings={','.join(settings_parts)}"],
-        check=False,
-    )
-    if mm.returncode == 0:
-        ctx.log("ModemManager 初始 EPS bearer 已更新")
-    else:
-        ctx.log("ModemManager 未接受在线 EPS bearer 修改，后续以 NetworkManager 配置为准", "warning")
+    modem, modem_error = get_modem_info(device_id)
+    at_port = first_dashboard_value(modem.get("linkhive.at_port"))
+    if modem_error or not at_port:
+        raise RuntimeError(f"无法读取 AT 端口：{modem_error or '未上报'}")
+    pdp_type = {"ipv4": "IP", "ipv6": "IPV6", "ipv4v6": "IPV4V6"}.get(ip_type, "IPV4V6")
+    output = at_command(at_port, f'AT+CGDCONT=1,"{pdp_type}","{apn}"', 2.0)
+    if "ERROR" in output:
+        raise RuntimeError(f"保存 APN 失败：{output.strip() or '未知错误'}")
+    ctx.log("APN 已通过 AT+CGDCONT 写入")
 
     run_logged_command(
         ctx,
@@ -2675,7 +2545,7 @@ def lpac_runtime_env(device: dict[str, Any], apdu_mode: str) -> dict[str, str]:
         env["LPAC_APDU_QMI_DEVICE"] = qmi_device
     probe = device.get("probe") if isinstance(device.get("probe"), dict) else {}
     at_port = str(probe.get("port") or "").strip()
-    if not at_port and device.get("source") == "modemmanager":
+    if not at_port:
         modem, _error = get_modem_info(str(device.get("id") or ""))
         at_ports = modem_at_ports(modem)
         at_port = at_ports[0] if at_ports else ""
@@ -2846,18 +2716,13 @@ def send_test_sms(ctx: ActionContext, payload: dict[str, Any]) -> None:
 
 
 def query_current_smsc(ctx: ActionContext, device_id: str = "") -> Optional[tuple[str, str]]:
-    result = run_logged_command(
-        ctx,
-        ["mmcli", "-m", modem_selector_for_device_id(device_id), "--command=AT+CSCA?"],
-        check=False,
-    )
-    if result.returncode != 0:
+    modem, _modem_error = get_modem_info(device_id)
+    at_port = first_dashboard_value(modem.get("linkhive.at_port"))
+    if not at_port:
         return None
-    output = command_output_text(result)
+    output = at_command(at_port, "AT+CSCA?", 2.0)
     match = re.search(r'\+CSCA:\s*"([^"]+)"\s*,\s*(\d+)', output)
-    if not match:
-        return None
-    return match.group(1), match.group(2)
+    return (match.group(1), match.group(2)) if match else None
 
 
 def smsc_matches_target(current: Optional[tuple[str, str]], target_address: str, target_type: str) -> bool:
@@ -2875,29 +2740,17 @@ def apply_smsc_value(ctx: ActionContext, smsc_address: str, smsc_type: str, devi
         return
 
     ctx.log(f"准备应用短信中心：{address},{smsc_kind}")
-    result = run_logged_command(
-        ctx,
-        ["mmcli", "-m", modem_selector_for_device_id(device_id), f'--command=AT+CSCA="{address}",{smsc_kind}'],
-        check=False,
-    )
+    modem, modem_error = get_modem_info(device_id)
+    at_port = first_dashboard_value(modem.get("linkhive.at_port"))
+    if modem_error or not at_port:
+        raise RuntimeError(f"无法读取 AT 端口：{modem_error or '未上报'}")
+    output = at_command(at_port, f'AT+CSCA="{address}",{smsc_kind}', 2.0)
+    if "ERROR" in output:
+        raise RuntimeError(f"短信中心写入失败：{output.strip() or '未知错误'}")
     queried = query_current_smsc(ctx, device_id)
-    if result.returncode != 0:
-        error_text = command_output_text(result) or "未知错误"
-        if smsc_matches_target(queried, address, smsc_kind):
-            ctx.log(f"基带返回写入异常，但当前短信中心已为目标值：{address},{smsc_kind}", "warning")
-            return
-        if "Memory full" in error_text:
-            current_text = f"{queried[0]},{queried[1]}" if queried else "未知"
-            raise RuntimeError(
-                f"设置短信中心失败：基带返回 Memory full，当前短信中心为 {current_text}，目标值为 {address},{smsc_kind}"
-            )
-        raise RuntimeError(f"设置短信中心失败：{error_text}")
-
-    ctx.log("短信中心设置命令已下发")
-    if queried:
-        ctx.log(f"当前短信中心：{queried[0]},{queried[1]}")
-    else:
-        ctx.log("未能回读当前短信中心，可能是基带未返回标准文本", "warning")
+    if not smsc_matches_target(queried, address, smsc_kind):
+        raise RuntimeError("短信中心写入后校验失败")
+    ctx.log("短信中心已写入")
 
 
 def apply_profile_smsc_if_configured(ctx: ActionContext, iccid: str, device_id: str = "") -> bool:
@@ -2946,44 +2799,38 @@ def save_profile_smsc(ctx: ActionContext, payload: dict[str, Any]) -> None:
 
 def apply_radio_mode(ctx: ActionContext, payload: dict[str, Any]) -> None:
     device_id = str(payload.get("device_id", "")).strip()
-    selector = modem_selector_for_device_id(device_id)
     mode = str(payload.get("mode", "")).strip()
-    commands = {
-        "4g_only": (["mmcli", "-m", selector, "--set-allowed-modes=4g"], "仅 4G"),
-        "3g4g_prefer4g": (
-            ["mmcli", "-m", selector, "--set-allowed-modes=3g|4g", "--set-preferred-mode=4g"],
-            "3G/4G，优先 4G",
-        ),
-        "3g_only": (["mmcli", "-m", selector, "--set-allowed-modes=3g"], "仅 3G"),
+    modem, modem_error = get_modem_info(device_id)
+    at_port = first_dashboard_value(modem.get("linkhive.at_port"))
+    if modem_error or not at_port:
+        raise RuntimeError(f"无法读取 AT 端口：{modem_error or '未上报'}")
+    at_modes = {
+        "4g_only": ('AT+QCFG="nwscanmode",3,1', "仅 4G"),
+        "3g4g_prefer4g": ('AT+QCFG="nwscanmode",0,1', "自动，优先当前网络策略"),
+        "3g_only": ('AT+QCFG="nwscanmode",2,1', "仅 3G"),
     }
-    if mode not in commands:
+    if mode not in at_modes:
         raise ValueError("不支持的制式选项")
-    command, label = commands[mode]
-    run_logged_command(ctx, command, failure_prefix="切换网络制式失败：")
+    command, label = at_modes[mode]
+    output = at_command(at_port, command, 2.0)
+    if "ERROR" in output:
+        raise RuntimeError(f"切换网络制式失败：{output.strip() or '未知错误'}")
     ctx.log(f"网络制式已切换到 {label}")
 
 
 def apply_network_selection(ctx: ActionContext, payload: dict[str, Any]) -> None:
     device_id = str(payload.get("device_id", "")).strip()
     operator_code = str(payload.get("operator_code", "")).strip()
-    run_logged_command(
-        ctx,
-        ["nmcli", "connection", "modify", "modem", "gsm.network-id", operator_code],
-        check=False,
-        success_message="NetworkManager 选网配置已更新",
-    )
-
-    if not operator_code:
-        ctx.log("已切回自动选网")
-        recover_modem(ctx, {"device_id": device_id})
-        return
-
-    run_logged_command(
-        ctx,
-        ["mmcli", "-m", modem_selector_for_device_id(device_id), f"--3gpp-register-in-operator={operator_code}"],
-        check=False,
-    )
-    ctx.sleep(5, "等待手动选网结果")
+    modem, modem_error = get_modem_info(device_id)
+    at_port = first_dashboard_value(modem.get("linkhive.at_port"))
+    if modem_error or not at_port:
+        raise RuntimeError(f"无法读取 AT 端口：{modem_error or '未上报'}")
+    command = "AT+COPS=0" if not operator_code else f'AT+COPS=1,2,"{operator_code}"'
+    output = at_command(at_port, command, 8.0)
+    if "ERROR" in output:
+        raise RuntimeError(f"选网失败：{output.strip() or '未知错误'}")
+    ctx.log("已切回自动选网" if not operator_code else f"已请求注册到运营商 {operator_code}")
+    ctx.sleep(5, "等待选网结果")
     modem, modem_error = get_modem_info(device_id)
     if modem_error:
         ctx.log(f"当前无法读取注册状态：{modem_error}", "warning")
@@ -3050,12 +2897,8 @@ def apply_ims_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
         write_env_config(APP_CONFIG_PATH, config)
         ctx.log("IMS 配置已持久化到 linkhive.conf")
 
-        # IMS settings take effect after modem re-registers.
-        # Use a lightweight restart (ModemManager only) instead of full
-        # recover_modem which does QMI SIM power-cycle and may fail with
-        # "CID allocation failed" on some devices.
-        ctx.log("正在重启 ModemManager 以使 IMS 配置生效…")
-        run_logged_command(ctx, ["systemctl", "restart", "ModemManager"], check=False, success_message="ModemManager 已重启")
+        ctx.log("等待基带重新注册网络")
+        recover_modem(ctx, {"device_id": device_id})
         ctx.sleep(10, "等待基带重新注册网络")
 
         modem, modem_error = get_modem_info(device_id)
@@ -3903,11 +3746,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     if os.path.exists("/opt/lpac/lpac"):
-        try:
-            refresh_profile_cache(force=True)
-            print("eSIM profile cache initialized")
-        except Exception as exc:
-            print(f"eSIM profile cache init failed: {exc}")
+        print("lpac installed, eSIM profile cache will initialize on demand")
     else:
         print("lpac not installed, eSIM management unavailable")
     threading.Thread(target=action_queue_worker, daemon=True).start()

@@ -84,7 +84,7 @@ export default function SmsForwardingPage() {
         <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><WifiIcon className="size-4 text-muted-foreground" />服务状态</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            <ServiceRow name="ModemManager" state={status?.services.modemmanager || "--"} />
+            <ServiceRow name="基带通信" state={status?.services.modemmanager || "--"} />
             <ServiceRow name="短信转发" state={status?.services.sms_forwarder || "--"} />
             <ServiceRow name="管理页面" state={status?.services.web_admin || "--"} />
             <Separator />

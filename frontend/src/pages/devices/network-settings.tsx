@@ -88,7 +88,7 @@ export default function NetworkSettingsPage() {
             <Card>
               <CardHeader><CardTitle className="text-base flex items-center gap-2"><PhoneIcon className="size-4 text-muted-foreground" />IMS 语音</CardTitle></CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-sm text-muted-foreground">控制 VoLTE 和 VoWiFi 开关，修改后将自动重启 ModemManager 生效。</p>
+                <p className="text-sm text-muted-foreground">控制 VoLTE 和 VoWiFi 开关，修改后将通过直连基带重新检测状态。</p>
                 {status?.modem.volte_supported !== false ? (
               <div className="flex items-center justify-between">
                     <div className="space-y-0.5">

@@ -125,7 +125,7 @@ export default function DevicesPage() {
 
       {!devices.length ? (
         <div className="glass-card rounded-2xl p-10">
-          <EmptyState icon={SmartphoneIcon} title="未检测到蜂窝设备" description="请确认 ModemManager 能识别 4G 模块，然后刷新状态。" />
+          <EmptyState icon={SmartphoneIcon} title="未检测到蜂窝设备" description="请确认 Quectel 模组、/dev/cdc-wdm0 或 AT 串口已就绪，然后刷新状态。" />
         </div>
       ) : (
         <div className="grid gap-5 xl:grid-cols-[19rem_minmax(0,1fr)]">
@@ -439,7 +439,7 @@ function EsimTab({
             <Badge variant={canWriteProfile ? "default" : "outline"}>{canWriteProfile ? "lpac 已就绪" : "lpac 未部署"}</Badge>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            <InfoRow label="识别来源" value={device.source === "at_probe" || device.source === "direct_at" ? "AT / QMI 直连" : "ModemManager"} />
+            <InfoRow label="识别来源" value={device.source === "direct_qmi" ? "QMI 直连" : "AT / QMI 直连"} />
             <InfoRow label="AT 端口" value={displayValue(device.probe?.port, "--")} />
             <InfoRow label="PIN 状态" value={displayValue(device.pin_state || device.probe?.pin_state, "--")} />
             <InfoRow label="ICCID" value={displayValue(device.iccid, "--")} />

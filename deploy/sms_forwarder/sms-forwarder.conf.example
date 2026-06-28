@@ -11,5 +11,5 @@ MODEM_ID=any
 # NOTIFICATION_TARGETS_JSON=[{"id":"bark-primary","label":"Bark","url":"barks://bark.example.com/device_key?group=sms&level=active","enabled":true},{"id":"tg-backup","label":"Telegram","url":"tgram://bot_token/chat_id","enabled":false}]
 NOTIFICATION_TARGETS_JSON=[]
 
-# Forward only these ModemManager SMS states, comma-separated.
+# Forward only these SMS states, comma-separated.
 FORWARD_SMS_STATES=received

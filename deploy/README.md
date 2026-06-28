@@ -5,7 +5,7 @@
 - `install.sh`：一键安装脚本，负责复制文件、安装依赖、配置 systemd 服务并启动后台。
 - `esim/lpac-switch.sh`：`lpac` 包装脚本，用于读取 Profile 和切换 eSIM。
 - `esim/lpac`：指向 `/opt/lpac/bin/lpac` 的兼容包装脚本。
-- `sms_forwarder/sms_forwarder.py`：轮询 ModemManager 短信并通过 Apprise 转发。
+- `sms_forwarder/sms_forwarder.py`：监听短信并通过 Apprise 转发。
 - `sms_forwarder/sms-forwarder.service`：短信转发 systemd 服务。
 - `shared/notification_utils.py`：通知渠道解析与发送的共享工具。
 - `sms_forwarder/sms-forwarder.conf.example`：Apprise 通知渠道配置模板。
