@@ -39,7 +39,7 @@ export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
   }, [theme])
 
   const services = useMemo(() => [
-    { name: "ModemManager", state: status?.services.modemmanager || "unknown", description: "蜂窝基带与 SIM 状态读取" },
+    { name: "基带通信", state: status?.services.modemmanager || "unknown", description: "QMI / AT 直连状态读取" },
     { name: "短信转发服务", state: status?.services.sms_forwarder || "unknown", description: "短信监听、转发与通知渠道" },
     { name: "Web 管理服务", state: status?.services.web_admin || "unknown", description: "LinkHive 控制台与 API" },
   ], [status?.services.modemmanager, status?.services.sms_forwarder, status?.services.web_admin])

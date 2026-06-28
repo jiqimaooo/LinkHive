@@ -46,10 +46,12 @@ from notification_utils import (  # noqa: E402
     save_notification_targets_in_config,
     send_apprise_notification,
 )
+from modem_direct import enumerate_direct_modems, get_direct_modem_info  # noqa: E402
 
 
 HOST = os.environ.get("FOURG_WIFI_ADMIN_HOST", "0.0.0.0")
 PORT = int(os.environ.get("FOURG_WIFI_ADMIN_PORT", "8080"))
+MODEM_BACKEND = os.environ.get("LINKHIVE_MODEM_BACKEND", "direct").strip().lower()
 NOTIFICATION_CONFIG_PATH = Path("/etc/sms-forwarder.conf")
 SMS_FORWARDER_SERVICE = "sms-forwarder.service"
 APP_CONFIG_PATH = Path("/etc/linkhive.conf")
@@ -820,6 +822,8 @@ def read_at_signal_dbm(modem: dict[str, str]) -> str:
 
 
 def read_modem_signal_dbm(modem: dict[str, str], device_id: str = "") -> str:
+    if first_dashboard_value(modem.get("linkhive.direct")):
+        return first_dashboard_value(modem.get("direct.signal.dbm")) or "--"
     result = run_command(["mmcli", "-m", modem_selector_for_device_id(device_id), "--signal-get", "-K"], check=False)
     if result.returncode == 0:
         metrics = parse_mmcli_kv(result.stdout)
@@ -1532,6 +1536,8 @@ def modem_id_from_path(path: str) -> str:
 
 
 def list_modem_paths() -> list[str]:
+    if MODEM_BACKEND == "direct":
+        return []
     result = run_command(["mmcli", "-L"], check=False)
     if result.returncode != 0:
         return []
@@ -1540,6 +1546,8 @@ def list_modem_paths() -> list[str]:
 
 def modem_selector_for_device_id(device_id: str = "") -> str:
     target = str(device_id or "").strip()
+    if MODEM_BACKEND == "direct":
+        return target.removeprefix("imei-") if target.startswith("imei-") else target
     if not target:
         return "any"
     for modem, _error in enumerate_modem_infos():
@@ -1549,6 +1557,8 @@ def modem_selector_for_device_id(device_id: str = "") -> str:
 
 
 def get_modem_info(device_id: str = "") -> tuple[dict[str, str], Optional[str]]:
+    if MODEM_BACKEND == "direct":
+        return get_direct_modem_info()
     selector = modem_selector_for_device_id(device_id)
     result = run_command(["mmcli", "-m", selector, "-K"], check=False)
     if result.returncode != 0:
@@ -1562,6 +1572,8 @@ def get_modem_info(device_id: str = "") -> tuple[dict[str, str], Optional[str]]:
 
 
 def enumerate_modem_infos() -> list[tuple[dict[str, str], Optional[str]]]:
+    if MODEM_BACKEND == "direct":
+        return enumerate_direct_modems()
     modem_paths = list_modem_paths()
     if not modem_paths:
         modem, error = get_modem_info("")
@@ -1594,6 +1606,8 @@ def modem_device_id(modem: dict[str, str]) -> str:
 
 
 def list_sms(device_id: str = "") -> tuple[list[dict[str, str]], Optional[str]]:
+    if MODEM_BACKEND == "direct":
+        return [], None
     selector = modem_selector_for_device_id(device_id)
     result = run_command(["mmcli", "-m", selector, "--messaging-list-sms"], check=False)
     if result.returncode != 0:
@@ -1677,35 +1691,6 @@ def parse_sms_paths(raw: str) -> list[str]:
     return re.findall(r"(/org/freedesktop/ModemManager1/SMS/\d+)", raw)
 
 
-def get_latest_sms_detail(device_id: str = "") -> dict[str, str]:
-    selector = modem_selector_for_device_id(device_id)
-    result = run_command(["mmcli", "-m", selector, "--messaging-list-sms"], check=False)
-    if result.returncode != 0:
-        raise RuntimeError(command_output_text(result) or "无法读取短信列表")
-
-    sms_paths = parse_sms_paths(result.stdout)
-    if not sms_paths:
-        raise RuntimeError("当前没有可重发的短信")
-
-    latest_path = max(
-        sms_paths,
-        key=lambda path: int(re.search(r"/SMS/(\d+)$", path).group(1)) if re.search(r"/SMS/(\d+)$", path) else -1,
-    )
-    detail = run_command(["mmcli", "-s", latest_path, "-K"], check=False)
-    if detail.returncode != 0:
-        raise RuntimeError(command_output_text(detail) or "无法读取最后一条短信详情")
-
-    kv = parse_mmcli_kv(detail.stdout)
-    return {
-        "path": latest_path,
-        "device_id": device_id,
-        "state": kv.get("sms.properties.state", ""),
-        "number": kv.get("sms.content.number", ""),
-        "text": normalize_sms_text(kv.get("sms.content.text", "") or kv.get("sms.content.data", "")),
-        "timestamp": format_beijing_timestamp(kv.get("sms.properties.timestamp", "")),
-    }
-
-
 def service_state(name: str) -> str:
     result = run_command(["systemctl", "is-active", name], check=False)
     return command_output_text(result) or "unknown"
@@ -1730,6 +1715,13 @@ def first_dashboard_value(*values: Any) -> str:
 
 
 def get_modem_sim_info(modem: dict[str, str]) -> dict[str, str]:
+    if first_dashboard_value(modem.get("linkhive.direct")):
+        return {
+            "sim.properties.iccid": first_dashboard_value(modem.get("direct.sim.iccid")),
+            "sim.properties.imsi": first_dashboard_value(modem.get("direct.sim.imsi")),
+            "sim.properties.operator-code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
+            "sim.properties.operator-name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
+        }
     sim_path = first_dashboard_value(modem.get("modem.generic.sim"))
     if not sim_path:
         return {}
@@ -1916,8 +1908,11 @@ def build_device_status(
 
     return {
         "id": device_id,
-        "source": "modemmanager",
-        "probe": {},
+        "source": "direct_at" if first_dashboard_value(modem.get("linkhive.direct")) else "modemmanager",
+        "probe": {
+            "port": first_dashboard_value(modem.get("linkhive.at_port")),
+            "qmi_path": first_dashboard_value(modem.get("linkhive.qmi_path")),
+        } if first_dashboard_value(modem.get("linkhive.direct")) else {},
         "label": " ".join(
             part
             for part in [
@@ -2405,7 +2400,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         "connection": connection_payload,
         "dashboard": dashboard,
         "services": {
-            "modemmanager": service_state("ModemManager"),
+            "modemmanager": "active" if MODEM_BACKEND == "direct" and not modem_error else service_state("ModemManager"),
             "sms_forwarder": service_state(SMS_FORWARDER_SERVICE),
             "web_admin": service_state("linkhive-admin.service"),
         },
@@ -2811,27 +2806,6 @@ def restart_sms_service(ctx: ActionContext) -> None:
         ["systemctl", "restart", SMS_FORWARDER_SERVICE],
         success_message="短信转发服务已重启",
     )
-
-
-def resend_last_sms(ctx: ActionContext, payload: Optional[dict[str, Any]] = None) -> None:
-    device_id = str((payload or {}).get("device_id", "")).strip()
-    ctx.log("开始读取最后一条短信")
-    detail = get_latest_sms_detail(device_id)
-    ctx.log(f"短信来源：{detail.get('number') or 'unknown'}")
-    ctx.log(f"短信时间：{detail.get('timestamp') or '未知时间'}")
-    for line in (detail.get("text") or "(empty)").splitlines():
-        ctx.log(line)
-
-    config = read_env_config(NOTIFICATION_CONFIG_PATH)
-    targets = load_notification_targets(config)
-    labels = configured_channel_labels(targets)
-    if not labels:
-        raise RuntimeError("未配置任何启用的通知渠道，无法重发最后一条短信")
-
-    title, body = format_sms_notification(detail)
-    ctx.log(f"准备推送到：{'、'.join(labels)}")
-    delivered_labels = send_apprise_notification(targets, title, body)
-    ctx.log(f"最后一条短信已重新推送到：{'、'.join(delivered_labels)}")
 
 
 def send_test_sms(ctx: ActionContext, payload: dict[str, Any]) -> None:
@@ -3254,9 +3228,6 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
         return
     if action == "restart_sms":
         restart_sms_service(ctx)
-        return
-    if action == "resend_last_sms":
-        resend_last_sms(ctx, payload)
         return
     if action == "send_test_sms":
         send_test_sms(ctx, payload)

@@ -1,6 +1,6 @@
 [Unit]
 Description=LinkHive Web Admin
-After=network-online.target ModemManager.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

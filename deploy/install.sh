@@ -11,6 +11,7 @@ SMS_FORWARDER_SRC="${SCRIPT_DIR}/sms_forwarder/sms_forwarder.py"
 SMS_SERVICE_SRC="${SCRIPT_DIR}/sms_forwarder/sms-forwarder.service"
 SMS_CONFIG_EXAMPLE_SRC="${SCRIPT_DIR}/sms_forwarder/sms-forwarder.conf.example"
 NOTIFICATION_UTILS_SRC="${SCRIPT_DIR}/shared/notification_utils.py"
+MODEM_DIRECT_SRC="${SCRIPT_DIR}/shared/modem_direct.py"
 LPAC_SWITCH_SRC="${SCRIPT_DIR}/esim/lpac-switch.sh"
 LPAC_WRAPPER_SRC="${SCRIPT_DIR}/esim/lpac"
 LPAC_ASSETS_DIR="${SCRIPT_DIR}/esim"
@@ -18,6 +19,7 @@ LPAC_ASSETS_DIR="${SCRIPT_DIR}/esim"
 WEB_ADMIN_DST="/usr/local/bin/linkhive_admin.py"
 SMS_FORWARDER_DST="/usr/local/bin/sms_forwarder.py"
 NOTIFICATION_UTILS_DST="/usr/local/bin/notification_utils.py"
+MODEM_DIRECT_DST="/usr/local/bin/modem_direct.py"
 LPAC_SWITCH_DST="/usr/local/bin/lpac-switch"
 LPAC_WRAPPER_DST="/usr/local/bin/lpac"
 FRONTEND_DIST_DST="/usr/local/bin/frontend_dist"
@@ -285,7 +287,7 @@ PY
 }
 
 show_dependency_warnings() {
-    for cmd in python3 systemctl mmcli nmcli qmicli; do
+    for cmd in python3 systemctl nmcli; do
         if ! command -v "${cmd}" >/dev/null 2>&1; then
             warn "未检测到命令 ${cmd}，相关功能可能无法正常工作"
         fi
@@ -445,7 +447,7 @@ print_install_summary() {
     if [ "${SIM_TYPE}" = "physical" ]; then
         printf '%s\n' "当前模式: 普通 SIM，控制台切换到 eSIM 后才会执行 eSIM 管理"
     fi
-    printf '%s\n' "查看短信: mmcli -m any --messaging-list-sms"
+    printf '%s\n' "查看状态: curl -s http://127.0.0.1:8080/api/status"
     printf '%s\n' "================================"
 }
 
@@ -463,14 +465,8 @@ install_system_packages() {
             missing_packages="${missing_packages} python3-venv"
         fi
     fi
-    if ! command -v mmcli >/dev/null 2>&1; then
-        missing_packages="${missing_packages} modemmanager"
-    fi
     if ! command -v nmcli >/dev/null 2>&1; then
         missing_packages="${missing_packages} network-manager"
-    fi
-    if ! command -v qmicli >/dev/null 2>&1; then
-        missing_packages="${missing_packages} libqmi-utils"
     fi
     if ! command -v unzip >/dev/null 2>&1; then
         missing_packages="${missing_packages} unzip"
@@ -755,6 +751,7 @@ main() {
     require_file "${SMS_SERVICE_SRC}"
     require_file "${SMS_CONFIG_EXAMPLE_SRC}"
     require_file "${NOTIFICATION_UTILS_SRC}"
+    require_file "${MODEM_DIRECT_SRC}"
     require_file "${LPAC_SWITCH_SRC}"
     require_file "${LPAC_WRAPPER_SRC}"
 
@@ -769,6 +766,7 @@ main() {
     install_file "${WEB_ADMIN_SRC}" "${WEB_ADMIN_DST}" 755
     install_file "${SMS_FORWARDER_SRC}" "${SMS_FORWARDER_DST}" 755
     install_file "${NOTIFICATION_UTILS_SRC}" "${NOTIFICATION_UTILS_DST}" 644
+    install_file "${MODEM_DIRECT_SRC}" "${MODEM_DIRECT_DST}" 644
     install_file "${LPAC_SWITCH_SRC}" "${LPAC_SWITCH_DST}" 755
     install_file "${LPAC_WRAPPER_SRC}" "${LPAC_WRAPPER_DST}" 755
 

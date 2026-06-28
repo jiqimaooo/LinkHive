@@ -1,6 +1,6 @@
 [Unit]
 Description=Forward incoming SMS messages via Apprise
-After=network-online.target ModemManager.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

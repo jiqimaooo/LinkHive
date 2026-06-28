@@ -39,7 +39,6 @@ import type { DeviceStatus, Profile } from "@/lib/types"
 const TAB_ITEMS = [
   { key: "overview", label: "概览", icon: CpuIcon },
   { key: "network", label: "网络", icon: SettingsIcon },
-  { key: "sms", label: "短信", icon: MessageSquareTextIcon },
   { key: "esim", label: "eSIM", icon: BadgeCheckIcon },
   { key: "actions", label: "操作", icon: RouterIcon },
 ] as const
@@ -272,7 +271,6 @@ function DeviceDetail({
       <div className="p-5">
         {activeTab === "overview" ? <OverviewTab device={device} /> : null}
         {activeTab === "network" ? <NetworkTab device={device} actionBusy={actionBusy} runAction={runAction} /> : null}
-        {activeTab === "sms" ? <SmsTab device={device} actionBusy={actionBusy} runAction={runAction} /> : null}
         {activeTab === "esim" ? (
           <EsimTab
             device={device}
@@ -404,31 +402,6 @@ function NetworkTab({ device, actionBusy, runAction }: { device: DeviceStatus; a
   )
 }
 
-function SmsTab({ device, actionBusy, runAction }: { device: DeviceStatus; actionBusy: boolean; runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void> }) {
-  const [number, setNumber] = useState("")
-  const [message, setMessage] = useState("LinkHive test")
-  return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <div className="glass-panel rounded-2xl p-4">
-        <h3 className="mb-3 text-base font-semibold">短信能力</h3>
-        <div className="grid gap-3 text-sm">
-          <InfoRow label="短信支持" value={device.capabilities.sms_supported ? "支持" : "不支持"} />
-          <InfoRow label="设备号码" value={displayValue(device.number)} />
-          <InfoRow label="ICCID" value={displayValue(device.iccid)} />
-        </div>
-      </div>
-      <div className="glass-panel rounded-2xl p-4">
-        <h3 className="mb-3 text-base font-semibold">发送测试短信</h3>
-        <div className="grid gap-3">
-          <div className="grid gap-2"><Label htmlFor="sms-number">目标号码</Label><Input id="sms-number" value={number} onChange={(event) => setNumber(event.target.value)} /></div>
-          <div className="grid gap-2"><Label htmlFor="sms-message">内容</Label><Input id="sms-message" value={message} onChange={(event) => setMessage(event.target.value)} /></div>
-          <Button type="button" disabled={actionBusy || !number.trim() || !message.trim()} onClick={() => { void runAction("send_test_sms", { device_id: device.id, number: number.trim(), message }, `从 ${device.label} 发送测试短信`) }}><SendIcon data-icon="inline-start" />发送</Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function EsimTab({
   device,
   profiles,
@@ -466,7 +439,7 @@ function EsimTab({
             <Badge variant={canWriteProfile ? "default" : "outline"}>{canWriteProfile ? "lpac 已就绪" : "lpac 未部署"}</Badge>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            <InfoRow label="识别来源" value={device.source === "at_probe" ? "AT 底层探测" : "ModemManager"} />
+            <InfoRow label="识别来源" value={device.source === "at_probe" || device.source === "direct_at" ? "AT / QMI 直连" : "ModemManager"} />
             <InfoRow label="AT 端口" value={displayValue(device.probe?.port, "--")} />
             <InfoRow label="PIN 状态" value={displayValue(device.pin_state || device.probe?.pin_state, "--")} />
             <InfoRow label="ICCID" value={displayValue(device.iccid, "--")} />
