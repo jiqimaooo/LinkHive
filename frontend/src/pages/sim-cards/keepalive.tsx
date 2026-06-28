@@ -161,7 +161,7 @@ export default function KeepalivePage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="短信保活"
+        title="定时任务"
         description="按设备配置定时短信。普通 SIM 直接发送；eSIM 设备可选择指定 Profile，执行时先切卡再发送。"
       />
 

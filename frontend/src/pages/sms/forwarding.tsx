@@ -25,7 +25,7 @@ export default function SmsForwardingPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="短信转发规则" description="配置短信转发通知渠道，每种渠道只保留一份。" />
+      <PageHeader title="通知转发" description="配置短信通知渠道，每种渠道只保留一份。" />
 
       <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
         <Card>
@@ -92,7 +92,7 @@ export default function SmsForwardingPage() {
               <div className="flex items-center justify-between gap-3"><span className="text-sm font-medium">已配置渠道</span><Badge variant="secondary">{configuredCount} 个</Badge></div>
               <div className="mt-3">{configuredLabels.length ? <div className="flex flex-wrap gap-1.5">{configuredLabels.map((l) => <Badge key={l} variant="secondary" className="text-xs">{l}</Badge>)}</div> : <p className="text-sm text-muted-foreground">还没有已配置渠道。</p>}</div>
             </div>
-            <Button type="button" variant="outline" className="w-full" disabled={actionBusy} onClick={() => { void runAction("restart_sms", {}, "重启短信转发") }}><RefreshCwIcon data-icon="inline-start" />重启短信转发</Button>
+              <Button type="button" variant="outline" className="w-full" disabled={actionBusy} onClick={() => { void runAction("restart_sms", {}, "重启通知转发") }}><RefreshCwIcon data-icon="inline-start" />重启通知转发</Button>
           </CardContent>
         </Card>
       </div>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import {
   ChevronDownIcon,
   LogOutIcon,
@@ -27,6 +28,7 @@ const STATUS_META: Record<Exclude<ServiceTone, "muted">, { label: string; classN
 
 export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
   const { authStatus, isRefreshing, logout, refreshStatus, status } = useAppContext()
+  const navigate = useNavigate()
   const [theme, setTheme] = useState<ThemeMode>(() => resolveInitialTheme())
   const [userMenuOpen, setUserMenuOpen] = useState(false)
 
@@ -72,14 +74,14 @@ export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
               <span className={cn("size-2.5 rounded-full shadow-[0_0_0_4px_rgba(16,185,129,0.12)]", statusMeta.className)} />
             </button>
             <div className="pointer-events-none absolute right-0 top-full mt-2 w-[18rem] translate-y-1 opacity-0 transition duration-150 group-hover/status:pointer-events-auto group-hover/status:translate-y-0 group-hover/status:opacity-100 group-focus-within/status:pointer-events-auto group-focus-within/status:translate-y-0 group-focus-within/status:opacity-100">
-              <div className="glass-card rounded-xl p-3 text-sm text-slate-900 dark:text-slate-100">
+              <div className="floating-surface rounded-xl p-3 text-sm">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div className="font-semibold">{statusMeta.label}</div>
                   <span className={cn("size-2 rounded-full", statusMeta.className)} />
                 </div>
                 <div className="space-y-2">
                   {services.map((service) => (
-                    <div key={service.name} className="glass-panel flex items-start justify-between gap-3 rounded-lg px-3 py-2">
+                    <div key={service.name} className="floating-panel flex items-start justify-between gap-3 rounded-lg px-3 py-2">
                       <div className="min-w-0">
                         <div className="truncate font-medium">{service.name}</div>
                         <div className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{service.description}</div>
@@ -91,7 +93,7 @@ export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
                     </div>
                   ))}
                 </div>
-                <div className="mt-2 border-t border-white/60 pt-2 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                <div className="mt-2 border-t border-slate-200 pt-2 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
                   {status?.timestamp ? `最后更新 ${status.timestamp}` : "等待状态同步"}
                 </div>
               </div>
@@ -133,11 +135,14 @@ export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
             </button>
 
             {userMenuOpen ? (
-              <div className="glass-card absolute right-0 top-full mt-2 w-44 rounded-xl p-1.5 text-sm text-slate-800 dark:text-slate-100">
+              <div className="floating-surface absolute right-0 top-full mt-2 w-48 rounded-xl p-1.5 text-sm">
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-slate-900/5 dark:hover:bg-white/10"
-                  onClick={() => setUserMenuOpen(false)}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-slate-800 transition-colors hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/10"
+                  onClick={() => {
+                    setUserMenuOpen(false)
+                    navigate("/settings/profile")
+                  }}
                 >
                   <UserCircleIcon className="size-4 text-slate-500 dark:text-slate-400" />
                   个人中心

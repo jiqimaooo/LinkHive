@@ -4,13 +4,13 @@ import {
   LayoutDashboardIcon,
   MessageSquareTextIcon,
   MonitorIcon,
-  ScrollTextIcon,
   Settings2Icon,
   ShieldCheckIcon,
   InfoIcon,
   TerminalIcon,
   SendIcon,
   XIcon,
+  UserCircleIcon,
 } from "lucide-react"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
@@ -31,13 +31,13 @@ const MAIN_MENU = [
     ],
   },
   {
-    title: "短信管理",
+    title: "短信",
     path: "/sms",
     icon: MessageSquareTextIcon,
     children: [
-      { title: "收件箱", path: "/sms/inbox", icon: ScrollTextIcon },
-      { title: "转发规则", path: "/sms/forwarding", icon: SendIcon },
-      { title: "短信保活", path: "/sms/keepalive", icon: BarChart3Icon },
+      { title: "短信", path: "/sms", icon: MessageSquareTextIcon },
+      { title: "通知转发", path: "/sms/forwarding", icon: SendIcon },
+      { title: "定时任务", path: "/sms/tasks", icon: BarChart3Icon },
     ],
   },
   {
@@ -45,6 +45,7 @@ const MAIN_MENU = [
     path: "/settings",
     icon: Settings2Icon,
     children: [
+      { title: "个人中心", path: "/settings/profile", icon: UserCircleIcon },
       { title: "安全设置", path: "/settings/security", icon: ShieldCheckIcon },
       { title: "关于", path: "/settings/about", icon: InfoIcon },
     ],
@@ -73,7 +74,10 @@ export function Sidebar({
     return location.pathname.startsWith(item.path)
   }
 
-  const isChildActive = (path: string) => location.pathname.startsWith(path)
+  const isChildActive = (path: string) => {
+    if (path === "/sms" || path === "/settings/profile" || path === "/devices") return location.pathname === path
+    return location.pathname.startsWith(path)
+  }
 
   return (
     <>
