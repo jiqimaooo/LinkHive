@@ -164,10 +164,12 @@ KEEPALIVE_NEXT_ALLOWED_AT = 0.0
 DASHBOARD_TRAFFIC_LOCK = threading.Lock()
 DASHBOARD_TRAFFIC_BASELINE: dict[str, Any] = {"date": "", "rx": 0, "tx": 0, "iface": ""}
 DASHBOARD_TRAFFIC_HISTORY: deque[dict[str, Any]] = deque(maxlen=48)
+RAW_SIM_PROBE_CACHE: dict[str, Any] = {"updated_at": 0.0, "items": [], "error": ""}
+RAW_SIM_PROBE_LOCK = threading.Lock()
 
 
-def run_command(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=check, capture_output=True, text=True, errors="replace")
+def run_command(args: list[str], check: bool = True, env: Optional[dict[str, str]] = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, check=check, capture_output=True, text=True, errors="replace", env=env)
 
 
 def command_output_text(result: subprocess.CompletedProcess[str]) -> str:
@@ -652,6 +654,128 @@ def first_at_response(modem: dict[str, str], command: str, timeout_seconds: floa
         if response.strip():
             return response
     return ""
+
+
+def clean_at_response(raw_response: str, command: str = "") -> str:
+    lines: list[str] = []
+    command_upper = command.strip().upper()
+    for raw_line in raw_response.replace("\r", "\n").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if command_upper and line.upper() == command_upper:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def at_port_priority(port_path: str) -> tuple[int, str]:
+    result = run_command(["udevadm", "info", "-q", "property", "-n", port_path], check=False)
+    output = result.stdout if result.returncode == 0 else ""
+    if "ID_MM_PORT_TYPE_AT_PRIMARY=1" in output:
+        return (0, port_path)
+    if "ID_MM_PORT_TYPE_AT_SECONDARY=1" in output:
+        return (1, port_path)
+    if "ID_MM_CANDIDATE=1" in output:
+        return (2, port_path)
+    return (3, port_path)
+
+
+def raw_at_port_candidates() -> list[str]:
+    ports = sorted(glob("/dev/ttyUSB*"), key=at_port_priority)
+    return [port for port in ports if os.path.exists(port)]
+
+
+def parse_at_value(raw_response: str, patterns: list[str]) -> str:
+    text = clean_at_response(raw_response)
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip().strip('"')
+    for line in text.splitlines():
+        normalized = line.strip()
+        if normalized and normalized.upper() not in {"OK", "ERROR"} and not normalized.startswith("+"):
+            return normalized
+    return ""
+
+
+def read_raw_at_snapshot(port_path: str) -> dict[str, Any]:
+    """直接读取 AT 口，用于 ModemManager 尚未枚举 modem 时识别实体 SIM/eUICC。"""
+    commands = {
+        "at": "AT",
+        "identity": "ATI",
+        "pin": "AT+CPIN?",
+        "iccid": "AT+CCID",
+        "qccid": "AT+QCCID",
+        "imsi": "AT+CIMI",
+        "operator": "AT+COPS?",
+        "simstat": "AT+QSIMSTAT?",
+        "initstat": "AT+QINISTAT",
+    }
+    responses: dict[str, str] = {}
+    for key, command in commands.items():
+        try:
+            responses[key] = run_at_command(port_path, command, 1.2)
+        except Exception as exc:
+            responses[key] = f"ERROR: {exc}"
+
+    if "OK" not in responses.get("at", "") and "OK" not in responses.get("identity", ""):
+        return {}
+
+    iccid = parse_at_value(
+        responses.get("iccid", "") or responses.get("qccid", ""),
+        [r"\+CCID:\s*([0-9A-F]+)", r"\+QCCID:\s*([0-9A-F]+)"],
+    )
+    if not iccid:
+        iccid = parse_at_value(responses.get("qccid", ""), [r"\+QCCID:\s*([0-9A-F]+)"])
+    imsi = parse_at_value(responses.get("imsi", ""), [r"^(\d{5,})$"])
+    pin_state = parse_at_value(responses.get("pin", ""), [r"\+CPIN:\s*([A-Z0-9 _-]+)"])
+    sim_present = bool(iccid or imsi or pin_state.upper() == "READY")
+
+    model = ""
+    manufacturer = ""
+    identity_lines = [
+        line
+        for line in clean_at_response(responses.get("identity", ""), "ATI").splitlines()
+        if line.upper() not in {"OK", "ERROR"}
+    ]
+    if identity_lines:
+        manufacturer = identity_lines[0]
+    if len(identity_lines) >= 2:
+        model = identity_lines[1]
+
+    return {
+        "port": port_path,
+        "manufacturer": manufacturer,
+        "model": model,
+        "iccid": iccid,
+        "imsi": imsi,
+        "operator_code": imsi[:5] if len(imsi) >= 5 else "",
+        "pin_state": pin_state,
+        "sim_present": sim_present,
+        "responses": {key: clean_at_response(value, commands[key]) for key, value in responses.items()},
+    }
+
+
+def probe_raw_sim_devices(force: bool = False) -> tuple[list[dict[str, Any]], str]:
+    with RAW_SIM_PROBE_LOCK:
+        now = time.time()
+        if not force and now - float(RAW_SIM_PROBE_CACHE.get("updated_at") or 0) < 12:
+            return list(RAW_SIM_PROBE_CACHE.get("items") or []), str(RAW_SIM_PROBE_CACHE.get("error") or "")
+
+        items: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for port_path in raw_at_port_candidates():
+            try:
+                snapshot = read_raw_at_snapshot(port_path)
+            except Exception as exc:
+                errors.append(f"{port_path}: {exc}")
+                continue
+            if snapshot:
+                items.append(snapshot)
+
+        RAW_SIM_PROBE_CACHE.update({"updated_at": now, "items": items, "error": "；".join(errors)})
+        return items, str(RAW_SIM_PROBE_CACHE["error"])
 
 
 def parse_qcsq_signal_dbm(raw_response: str) -> str:
@@ -1767,6 +1891,8 @@ def build_device_status(
 
     return {
         "id": device_id,
+        "source": "modemmanager",
+        "probe": {},
         "label": " ".join(
             part
             for part in [
@@ -1783,6 +1909,9 @@ def build_device_status(
         "imei": first_dashboard_value(modem.get("modem.generic.equipment-identifier")),
         "number": first_dashboard_value(modem.get("modem.generic.own-numbers.value[1]")),
         "iccid": iccid,
+        "imsi": first_dashboard_value(sim_info.get("sim.properties.imsi")),
+        "eid": first_dashboard_value(sim_info.get("sim.properties.eid")),
+        "pin_state": "",
         "operator_name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
         "operator_code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
         "home_operator": first_dashboard_value(sim_info.get("sim.properties.operator-name")),
@@ -1805,7 +1934,7 @@ def build_device_status(
         "capabilities": {
             "sms_supported": True,
             "data_supported": True,
-            "esim_supported": esim_supported,
+            "esim_supported": esim_supported or bool(first_dashboard_value(sim_info.get("sim.properties.eid"))),
             "lpac_supported": lpac_installed,
         },
         "profiles": device_profiles,
@@ -1819,10 +1948,73 @@ def build_device_status(
     }
 
 
+def build_raw_probe_device(snapshot: dict[str, Any], lpac_installed: bool) -> dict[str, Any]:
+    iccid = str(snapshot.get("iccid") or "").strip()
+    imsi = str(snapshot.get("imsi") or "").strip()
+    port = str(snapshot.get("port") or "").strip()
+    device_id = f"raw-sim-{iccid}" if iccid else f"raw-port-{Path(port).name or uuid.uuid4().hex[:8]}"
+    model = str(snapshot.get("model") or "").strip()
+    manufacturer = str(snapshot.get("manufacturer") or "").strip()
+    label = " ".join(part for part in [manufacturer, model] if part) or f"AT 设备 {Path(port).name}"
+
+    return {
+        "id": device_id,
+        "source": "at_probe",
+        "probe": {
+            "port": port,
+            "pin_state": str(snapshot.get("pin_state") or ""),
+            "sim_present": bool(snapshot.get("sim_present")),
+            "responses": snapshot.get("responses") if isinstance(snapshot.get("responses"), dict) else {},
+        },
+        "label": label,
+        "modem_path": "",
+        "modem_selector": "",
+        "manufacturer": manufacturer,
+        "model": model,
+        "imei": "",
+        "number": "",
+        "iccid": iccid,
+        "imsi": imsi,
+        "eid": "",
+        "pin_state": str(snapshot.get("pin_state") or ""),
+        "operator_name": "",
+        "operator_code": "",
+        "home_operator": "",
+        "home_operator_code": str(snapshot.get("operator_code") or ""),
+        "registration": "probe-only",
+        "state": "detected",
+        "signal": "0",
+        "signal_dbm": "--",
+        "access_tech": "",
+        "current_modes": "",
+        "band": "",
+        "interface_name": "",
+        "ip_address": "",
+        "roaming": False,
+        "sim_label": "实体 eSIM / SIM 已识别" if snapshot.get("sim_present") else "未确认 SIM",
+        "active_sim_kind": "unknown",
+        "capabilities": {
+            "sms_supported": False,
+            "data_supported": False,
+            "esim_supported": lpac_installed,
+            "lpac_supported": lpac_installed,
+        },
+        "profiles": [],
+        "connection": {
+            "apn": "",
+            "username": "",
+            "password": "",
+            "ip_type": "",
+            "network_id": "",
+        },
+    }
+
+
 def build_devices_snapshot(profiles: list[dict[str, Any]], lpac_installed: bool) -> list[dict[str, Any]]:
     modem_items = [(modem, error) for modem, error in enumerate_modem_infos() if modem and not error]
     if not modem_items:
-        return []
+        raw_items, _probe_error = probe_raw_sim_devices()
+        return [build_raw_probe_device(item, lpac_installed) for item in raw_items]
     primary_device_id = modem_device_id(modem_items[0][0])
     return [
         build_device_status(modem, profiles=profiles, lpac_installed=lpac_installed, primary_device_id=primary_device_id)
@@ -2104,6 +2296,8 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
     sms_errors: list[str] = []
     if devices:
         for device in devices:
+            if device.get("source") == "at_probe":
+                continue
             device_messages, sms_error = list_sms(str(device.get("id", "")))
             if sms_error:
                 sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
@@ -2258,9 +2452,10 @@ def run_logged_command(
     check: bool = True,
     success_message: str = "",
     failure_prefix: str = "",
+    env: Optional[dict[str, str]] = None,
 ) -> subprocess.CompletedProcess[str]:
     ctx.command(args)
-    result = run_command(args, check=False)
+    result = run_command(args, check=False, env=env)
     output = command_output_text(result)
     if output:
         for line in output.splitlines():
@@ -2304,6 +2499,29 @@ def recover_modem(ctx: ActionContext, payload: Optional[dict[str, Any]] = None) 
             ctx.log("ModemManager 启动失败，后续状态读取可能继续失败", "warning")
 
         ctx.sleep(10, "等待基带重新枚举")
+        ctx.log("重新触发 USB/串口设备事件，避免 ModemManager 重启后漏扫 Quectel 端口")
+        trigger_paths = [
+            *sorted(glob("/sys/class/tty/ttyUSB*")),
+            *sorted(glob("/sys/class/usbmisc/cdc-wdm*")),
+            *sorted(glob("/sys/class/net/wwan*")),
+        ]
+        if trigger_paths:
+            run_logged_command(
+                ctx,
+                ["udevadm", "trigger", "--action=add", *trigger_paths],
+                check=False,
+                success_message="已重新触发设备枚举事件",
+            )
+            run_logged_command(ctx, ["udevadm", "settle", "--timeout=10"], check=False)
+        else:
+            ctx.log("未找到可重新触发的 ttyUSB/cdc-wdm/wwan 设备节点", "warning")
+        run_logged_command(
+            ctx,
+            ["mmcli", "--scan-modems"],
+            check=False,
+            success_message="已请求 ModemManager 重新扫描 modem",
+        )
+        ctx.sleep(8, "等待 ModemManager 完成扫描")
         run_logged_command(
             ctx,
             ["systemctl", "restart", SMS_FORWARDER_SERVICE],
@@ -2418,6 +2636,76 @@ def switch_profile(ctx: ActionContext, payload: dict[str, Any], *, schedule_gap_
     if schedule_gap_after:
         schedule_keepalive_gap()
     ctx.log(f"{profile_name} 切换完成")
+
+
+def lpac_runtime_env(device: dict[str, Any], apdu_mode: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env["LPAC_APDU"] = apdu_mode
+    env["LPAC_HTTP"] = "curl"
+    qmi_lib_path = "/opt/libqmi-1.36.0/lib/x86_64-linux-gnu"
+    if os.path.isdir(qmi_lib_path):
+        current_library_path = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{qmi_lib_path}:{current_library_path}" if current_library_path else qmi_lib_path
+    qmi_device = find_qmi_device_path()
+    if qmi_device:
+        env["LPAC_APDU_QMI_DEVICE"] = qmi_device
+    probe = device.get("probe") if isinstance(device.get("probe"), dict) else {}
+    at_port = str(probe.get("port") or "").strip()
+    if not at_port and device.get("source") == "modemmanager":
+        modem, _error = get_modem_info(str(device.get("id") or ""))
+        at_ports = modem_at_ports(modem)
+        at_port = at_ports[0] if at_ports else ""
+    if at_port:
+        env["LPAC_APDU_AT_DEVICE"] = at_port
+    return env
+
+
+def download_esim_profile(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
+    activation_code = str(payload.get("activation_code", "")).strip()
+    confirmation_code = str(payload.get("confirmation_code", "")).strip()
+    apdu_mode = str(payload.get("apdu_mode", "qmi")).strip() or "qmi"
+    if apdu_mode not in {"qmi", "at"}:
+        raise ValueError("写入通道只支持 qmi 或 at")
+    if not activation_code:
+        raise ValueError("缺少 SM-DP+ 激活码")
+    if not os.path.exists("/opt/lpac/lpac"):
+        raise RuntimeError("未检测到 /opt/lpac/lpac，请先完成 lpac 部署后再写入 eSIM Profile")
+
+    device = device_status_for_id(device_id)
+    if not device:
+        raise RuntimeError("未找到目标设备")
+
+    ctx.log(f"准备向 {device.get('label') or device_id or '当前设备'} 写入 eSIM Profile")
+    ctx.log(f"写入通道：{apdu_mode}")
+    env = lpac_runtime_env(device, apdu_mode)
+    if env.get("LPAC_APDU_AT_DEVICE"):
+        ctx.log(f"AT 设备：{env['LPAC_APDU_AT_DEVICE']}")
+    if env.get("LPAC_APDU_QMI_DEVICE"):
+        ctx.log(f"QMI 设备：{env['LPAC_APDU_QMI_DEVICE']}")
+
+    args = ["/usr/local/bin/lpac-switch", "download", activation_code]
+    if confirmation_code:
+        args.append(confirmation_code)
+    result = run_logged_command(ctx, args, check=False, env=env)
+    payload_json: dict[str, Any]
+    if result.stdout.strip().startswith("{"):
+        try:
+            payload_json = parse_lpac_json(result.stdout)
+        except Exception:
+            payload_json = {"code": result.returncode, "message": command_output_text(result)}
+    else:
+        payload_json = {"code": result.returncode, "message": command_output_text(result)}
+    if result.returncode != 0 or int(payload_json.get("code", result.returncode) or 0) != 0:
+        raise RuntimeError(str(payload_json.get("message") or command_output_text(result) or "eSIM Profile 写入失败"))
+
+    ctx.log("eSIM Profile 下载/写入命令已完成")
+    try:
+        refresh_profile_cache(force=True)
+        ctx.log("eSIM Profiles 缓存已刷新")
+    except Exception as exc:
+        ctx.log(f"刷新 eSIM Profiles 失败：{exc}", "warning")
+    ctx.log("建议等待 10-20 秒后刷新设备状态，确认新 Profile 是否出现")
 
 
 def save_notifications_config(ctx: ActionContext, payload: dict[str, Any]) -> None:
@@ -2916,6 +3204,9 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
 def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> None:
     if action == "switch_profile":
         switch_profile(ctx, payload)
+        return
+    if action == "download_esim_profile":
+        download_esim_profile(ctx, payload)
         return
     if action == "save_apn":
         apply_apn_settings(ctx, payload)

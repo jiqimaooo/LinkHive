@@ -22,6 +22,13 @@ export type SmsItem = {
 
 export type DeviceStatus = {
   id: string
+  source?: "modemmanager" | "at_probe" | string
+  probe?: {
+    port?: string
+    pin_state?: string
+    sim_present?: boolean
+    responses?: Record<string, string>
+  }
   label: string
   modem_path: string
   modem_selector: string
@@ -30,6 +37,9 @@ export type DeviceStatus = {
   imei: string
   number: string
   iccid: string
+  imsi?: string
+  eid?: string
+  pin_state?: string
   operator_name: string
   operator_code: string
   home_operator: string
@@ -241,6 +251,7 @@ export type ActionState = "queued" | "running" | "done" | "error"
 
 export type ActionName =
   | "switch_profile"
+  | "download_esim_profile"
   | "recover_modem"
   | "restart_sms"
   | "resend_last_sms"

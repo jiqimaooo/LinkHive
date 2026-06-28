@@ -5,7 +5,6 @@ import { Toaster } from "sonner"
 
 import { useAppContext } from "@/hooks/app-context"
 import { Sidebar } from "@/components/layout/sidebar"
-import { ShellPanel } from "@/components/layout/shell-panel"
 import { TopNav } from "@/components/layout/top-nav"
 
 import LoginPage from "@/pages/login"
@@ -50,7 +49,6 @@ function AppLayout() {
           </div>
         </main>
       </div>
-      <ShellPanel />
       <Toaster richColors position="top-right" />
     </div>
   )

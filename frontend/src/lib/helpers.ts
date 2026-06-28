@@ -186,6 +186,8 @@ export function friendlyActionName(action: ActionName) {
   switch (action) {
     case "switch_profile":
       return "切换 eSIM"
+    case "download_esim_profile":
+      return "写入 eSIM Profile"
     case "recover_modem":
       return "重启基带"
     case "restart_sms":

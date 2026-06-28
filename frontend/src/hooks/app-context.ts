@@ -68,10 +68,6 @@ export type AppContextType = {
   radioMode: string
   setRadioMode: (value: string) => void
 
-  // Shell panel
-  shellPanelOpen: boolean
-  setShellPanelOpen: (value: boolean) => void
-
   // Derived
   esimEnabled: boolean
   currentSimType: "physical" | "esim"

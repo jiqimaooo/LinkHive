@@ -41,7 +41,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [apnForm, setApnForm] = useState<ApnFormState>({ apn: "", username: "", password: "", ip_type: "ipv4v6" })
   const [networkCode, setNetworkCode] = useState("")
   const [radioMode, setRadioMode] = useState("network_disabled")
-  const [shellPanelOpen, setShellPanelOpen] = useState(false)
   const [switchingMode, setSwitchingMode] = useState<"physical" | "esim" | null>(null)
 
   const notificationsDirtyRef = useRef(false)
@@ -480,12 +479,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (nextType !== newNotificationType) setNewNotificationType(nextType)
   }, [newNotificationType, notificationTargets])
 
-  // Auto-open shell panel
-  const shellActionLabel = activeAction?.label || submittingActionLabel
-  useEffect(() => {
-    if (shellActionLabel) setShellPanelOpen(true)
-  }, [shellActionLabel])
-
   // Cleanup expanded IDs
   useEffect(() => {
     if (!expandedKeepaliveTaskId) return
@@ -510,7 +503,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     profileSmscForms, setProfileSmscForms, expandedProfileIccid, setExpandedProfileIccid, saveProfileSmsc,
     apnForm, setApnForm,
     networkCode, setNetworkCode, radioMode, setRadioMode,
-    shellPanelOpen, setShellPanelOpen,
     esimEnabled, currentSimType,
     notificationsDirtyRef, keepaliveDirtyRef, profileSmscDirtyRef, apnDirtyRef, networkDirtyRef, radioModeDirtyRef,
   }

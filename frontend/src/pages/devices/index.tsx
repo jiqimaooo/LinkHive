@@ -4,6 +4,7 @@ import {
   BadgeCheckIcon,
   CardSimIcon,
   CpuIcon,
+  DownloadCloudIcon,
   MessageSquareTextIcon,
   RadioTowerIcon,
   RefreshCwIcon,
@@ -12,8 +13,8 @@ import {
   SettingsIcon,
   SignalIcon,
   SmartphoneIcon,
+  UploadCloudIcon,
   WifiIcon,
-  XCircleIcon,
 } from "lucide-react"
 import { useAppContext } from "@/hooks/app-context"
 import { PageHeader } from "@/components/shared/page-header"
@@ -233,10 +234,11 @@ function DeviceDetail({
               <Badge variant={device.registration === "home" || device.registration === "roaming" ? "default" : "outline"}>
                 {formatRegistrationState(device.registration)}
               </Badge>
+              {device.source === "at_probe" ? <Badge variant="outline">AT 探测</Badge> : null}
               <Badge variant="outline">{device.active_sim_kind === "esim" ? "eSIM" : device.active_sim_kind === "physical" ? "普通 SIM" : "SIM 类型未确认"}</Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              {formatOperatorName(device.operator_name, device.operator_code)} · {formatAccessTech(device.access_tech || "--")} · 信号 {displayValue(device.signal_dbm, "--")}
+              {formatOperatorName(device.operator_name, device.operator_code || device.home_operator_code)} · {formatAccessTech(device.access_tech || "--")} · 信号 {displayValue(device.signal_dbm, "--")}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
@@ -317,6 +319,9 @@ function OverviewTab({ device }: { device: DeviceStatus }) {
       icon: CardSimIcon,
       items: [
         ["ICCID", device.iccid],
+        ["IMSI", device.imsi],
+        ["EID", device.eid],
+        ["PIN 状态", device.pin_state || device.probe?.pin_state],
         ["当前 SIM", device.sim_label],
         ["归属运营商", formatOperatorName(device.home_operator, device.home_operator_code)],
         ["归属运营商代码", device.home_operator_code],
@@ -447,54 +452,157 @@ function EsimTab({
   saveProfileSmsc: (profile: Profile, preset?: { address: string; type: string }) => Promise<void>
   profileSmscDirtyRef: MutableRefObject<boolean>
 }) {
-  if (!device.capabilities.esim_supported) {
-    return (
-      <div className="glass-panel rounded-2xl p-10">
-        <EmptyState icon={XCircleIcon} title="该设备不支持 eSIM" description="当前设备仍可使用普通 SIM 的短信、网络和保活功能。" />
-      </div>
-    )
-  }
-
-  if (!profiles.length) {
-    return (
-      <div className="glass-panel rounded-2xl p-10">
-        <EmptyState icon={BadgeCheckIcon} title="还没有读到 eSIM Profile" description="请确认 lpac 可用，或刷新设备状态后重试。" />
-      </div>
-    )
-  }
+  const canWriteProfile = Boolean(device.capabilities.lpac_supported)
 
   return (
-    <div className="grid gap-3">
-      {profiles.map((profile) => {
-        const isCurrent = Boolean(profile.is_active)
-        const expanded = expandedProfileIccid === profile.iccid
-        const form = profileSmscForms[profile.iccid] ?? { address: profile.smsc_address || "", type: profile.smsc_type || "145" }
-        return (
-          <div key={profile.iccid} className={cn("glass-panel rounded-2xl p-4", isCurrent && "glass-panel-selected")}>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="truncate text-base font-semibold">{profile.display_name}</h3>
-                  <Badge variant={isCurrent ? "default" : "outline"}>{isCurrent ? "当前使用" : "待机"}</Badge>
-                </div>
-                <p className="mt-1 text-sm text-muted-foreground">ICCID：{profile.iccid || "--"}</p>
-                <p className="text-sm text-muted-foreground">短信中心：{profile.smsc_address ? `${profile.smsc_address},${profile.smsc_type || "145"}` : "未配置"}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={() => setExpandedProfileIccid(expanded ? null : profile.iccid)}>{expanded ? "收起设置" : "短信中心"}</Button>
-                <Button type="button" size="sm" variant={isCurrent ? "secondary" : "outline"} disabled={actionBusy || isCurrent} onClick={() => { void runAction("switch_profile", { device_id: device.id, iccid: profile.iccid }, `切换 ${device.label} 到 ${profile.display_name}`) }}>{isCurrent ? "当前使用中" : "切换到此卡"}</Button>
-              </div>
+    <div className="grid gap-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="glass-panel rounded-2xl p-4">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">eSIM 识别状态</h3>
+              <p className="mt-1 text-sm text-muted-foreground">用于判断实体 eSIM、空卡和写入环境是否就绪。</p>
             </div>
-            {expanded ? (
-              <div className="mt-4 grid gap-3 rounded-xl border border-white/60 p-3 dark:border-white/10 md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-end">
-                <div className="grid gap-2"><Label htmlFor={`smsc-${profile.iccid}`}>SMSC 号码</Label><Input id={`smsc-${profile.iccid}`} value={form.address} onChange={(event) => { profileSmscDirtyRef.current = true; setProfileSmscForms((current) => ({ ...current, [profile.iccid]: { ...form, address: event.target.value } })) }} /></div>
-                <div className="grid gap-2"><Label htmlFor={`smsc-type-${profile.iccid}`}>类型</Label><Input id={`smsc-type-${profile.iccid}`} value={form.type} onChange={(event) => { profileSmscDirtyRef.current = true; setProfileSmscForms((current) => ({ ...current, [profile.iccid]: { ...form, type: event.target.value } })) }} /></div>
-                <Button type="button" variant="outline" disabled={actionBusy} onClick={() => { void saveProfileSmsc(profile) }}>保存</Button>
-              </div>
-            ) : null}
+            <Badge variant={canWriteProfile ? "default" : "outline"}>{canWriteProfile ? "lpac 已就绪" : "lpac 未部署"}</Badge>
           </div>
-        )
-      })}
+          <div className="grid gap-3 md:grid-cols-2">
+            <InfoRow label="识别来源" value={device.source === "at_probe" ? "AT 底层探测" : "ModemManager"} />
+            <InfoRow label="AT 端口" value={displayValue(device.probe?.port, "--")} />
+            <InfoRow label="PIN 状态" value={displayValue(device.pin_state || device.probe?.pin_state, "--")} />
+            <InfoRow label="ICCID" value={displayValue(device.iccid, "--")} />
+            <InfoRow label="IMSI" value={displayValue(device.imsi, "--")} />
+            <InfoRow label="EID" value={displayValue(device.eid, "未读到")} />
+          </div>
+          {!canWriteProfile ? (
+            <div className="mt-4 rounded-xl border border-amber-200/80 bg-amber-50/70 p-3 text-sm text-amber-800 dark:border-amber-300/20 dark:bg-amber-300/10 dark:text-amber-100">
+              当前未检测到完整的 /opt/lpac/lpac，只能识别卡本体，暂不能写入 Profile。
+            </div>
+          ) : null}
+        </div>
+
+        <EsimDownloadPanel device={device} actionBusy={actionBusy} runAction={runAction} canWriteProfile={canWriteProfile} />
+      </div>
+
+      <div className="glass-panel rounded-2xl p-4">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-semibold">Profiles</h3>
+            <p className="mt-1 text-sm text-muted-foreground">写入完成后，新 Profile 会出现在这里。</p>
+          </div>
+          <Badge variant="outline">{profiles.length} 个</Badge>
+        </div>
+        {!profiles.length ? (
+          <div className="rounded-xl border border-dashed border-white/70 p-8 dark:border-white/10">
+            <EmptyState icon={BadgeCheckIcon} title="还没有读到 eSIM Profile" description={canWriteProfile ? "可以使用右侧写入入口下载 Profile。" : "请先部署 lpac，再刷新设备状态。"} />
+          </div>
+        ) : (
+          <div className="grid gap-3">
+            {profiles.map((profile) => {
+              const isCurrent = Boolean(profile.is_active)
+              const expanded = expandedProfileIccid === profile.iccid
+              const form = profileSmscForms[profile.iccid] ?? { address: profile.smsc_address || "", type: profile.smsc_type || "145" }
+              return (
+                <div key={profile.iccid} className={cn("glass-panel rounded-2xl p-4", isCurrent && "glass-panel-selected")}>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="truncate text-base font-semibold">{profile.display_name}</h3>
+                        <Badge variant={isCurrent ? "default" : "outline"}>{isCurrent ? "当前使用" : "待机"}</Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">ICCID：{profile.iccid || "--"}</p>
+                      <p className="text-sm text-muted-foreground">短信中心：{profile.smsc_address ? `${profile.smsc_address},${profile.smsc_type || "145"}` : "未配置"}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => setExpandedProfileIccid(expanded ? null : profile.iccid)}>{expanded ? "收起设置" : "短信中心"}</Button>
+                      <Button type="button" size="sm" variant={isCurrent ? "secondary" : "outline"} disabled={actionBusy || isCurrent} onClick={() => { void runAction("switch_profile", { device_id: device.id, iccid: profile.iccid }, `切换 ${device.label} 到 ${profile.display_name}`) }}>{isCurrent ? "当前使用中" : "切换到此卡"}</Button>
+                    </div>
+                  </div>
+                  {expanded ? (
+                    <div className="mt-4 grid gap-3 rounded-xl border border-white/60 p-3 dark:border-white/10 md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-end">
+                      <div className="grid gap-2"><Label htmlFor={`smsc-${profile.iccid}`}>SMSC 号码</Label><Input id={`smsc-${profile.iccid}`} value={form.address} onChange={(event) => { profileSmscDirtyRef.current = true; setProfileSmscForms((current) => ({ ...current, [profile.iccid]: { ...form, address: event.target.value } })) }} /></div>
+                      <div className="grid gap-2"><Label htmlFor={`smsc-type-${profile.iccid}`}>类型</Label><Input id={`smsc-type-${profile.iccid}`} value={form.type} onChange={(event) => { profileSmscDirtyRef.current = true; setProfileSmscForms((current) => ({ ...current, [profile.iccid]: { ...form, type: event.target.value } })) }} /></div>
+                      <Button type="button" variant="outline" disabled={actionBusy} onClick={() => { void saveProfileSmsc(profile) }}>保存</Button>
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EsimDownloadPanel({
+  device,
+  actionBusy,
+  runAction,
+  canWriteProfile,
+}: {
+  device: DeviceStatus
+  actionBusy: boolean
+  runAction: (action: import("@/lib/types").ActionName, payload: Record<string, unknown>, label: string) => Promise<void>
+  canWriteProfile: boolean
+}) {
+  const [activationCode, setActivationCode] = useState("")
+  const [confirmationCode, setConfirmationCode] = useState("")
+  const [apduMode, setApduMode] = useState(device.source === "at_probe" ? "at" : "qmi")
+
+  useEffect(() => {
+    setApduMode(device.source === "at_probe" ? "at" : "qmi")
+  }, [device.id, device.source])
+
+  return (
+    <div className="glass-panel rounded-2xl p-4">
+      <div className="mb-4 flex items-start gap-3">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white">
+          <UploadCloudIcon className="size-5" />
+        </div>
+        <div>
+          <h3 className="text-base font-semibold">写入新 Profile</h3>
+          <p className="mt-1 text-sm text-muted-foreground">使用运营商提供的 SM-DP+ 激活码下载到当前实体 eSIM。</p>
+        </div>
+      </div>
+      <div className="grid gap-3">
+        <div className="grid gap-2">
+          <Label htmlFor="esim-activation-code">激活码</Label>
+          <Input id="esim-activation-code" value={activationCode} onChange={(event) => setActivationCode(event.target.value)} placeholder="LPA:1$sm-dp.example.com$MATCHING-ID" />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="esim-confirmation-code">确认码</Label>
+          <Input id="esim-confirmation-code" value={confirmationCode} onChange={(event) => setConfirmationCode(event.target.value)} placeholder="可选" />
+        </div>
+        <div className="grid gap-2">
+          <Label>写入通道</Label>
+          <Select value={apduMode} onValueChange={(value) => setApduMode(value ?? "qmi")}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="qmi">QMI</SelectItem>
+              <SelectItem value="at">AT</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          type="button"
+          disabled={actionBusy || !canWriteProfile || !activationCode.trim()}
+          onClick={() => {
+            void runAction(
+              "download_esim_profile",
+              {
+                device_id: device.id,
+                activation_code: activationCode.trim(),
+                confirmation_code: confirmationCode.trim(),
+                apdu_mode: apduMode,
+              },
+              `向 ${device.label} 写入 eSIM Profile`,
+            )
+          }}
+        >
+          <DownloadCloudIcon data-icon="inline-start" />
+          下载并写入
+        </Button>
+      </div>
     </div>
   )
 }

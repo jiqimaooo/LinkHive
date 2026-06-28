@@ -1,6 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom"
 import {
-  BadgeCheckIcon,
   BarChart3Icon,
   LayoutDashboardIcon,
   MessageSquareTextIcon,
@@ -29,8 +28,6 @@ const MAIN_MENU = [
     icon: MonitorIcon,
     children: [
       { title: "设备列表", path: "/devices", icon: MonitorIcon },
-      { title: "网络设置", path: "/devices/network", icon: Settings2Icon },
-      { title: "eSIM 管理", path: "/devices/esim", icon: BadgeCheckIcon },
     ],
   },
   {
