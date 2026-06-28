@@ -176,6 +176,18 @@ def command_output_text(result: subprocess.CompletedProcess[str]) -> str:
     return (result.stdout or result.stderr or "").strip()
 
 
+def is_transient_modem_error(message: str) -> bool:
+    normalized = str(message or "").strip().lower()
+    transient_markers = (
+        "modem not enabled yet",
+        "not enabled yet",
+        "not enabled",
+        "not registered",
+        "operation only allowed in",
+    )
+    return any(marker in normalized for marker in transient_markers)
+
+
 def format_command(args: list[str]) -> str:
     return shlex.join(args)
 
@@ -1504,6 +1516,11 @@ def get_cached_profiles() -> tuple[list[dict[str, Any]], Optional[str]]:
         return [], str(exc)
 
 
+def get_profile_cache_snapshot() -> tuple[list[dict[str, Any]], Optional[str]]:
+    with PROFILE_CACHE_LOCK:
+        return list(PROFILE_CACHE), PROFILE_CACHE_ERROR or None
+
+
 def get_profile_by_iccid(iccid: str) -> dict[str, Any]:
     profiles, _ = get_cached_profiles()
     return next((profile for profile in profiles if str(profile.get("iccid")) == iccid), {})
@@ -1885,8 +1902,16 @@ def build_device_status(
         sim_info.get("sim.properties.iccid"),
         sim_info.get("sim.identifier"),
     )
-    esim_supported = bool(lpac_installed and (device_profiles or device_id == primary_device_id))
-    active_sim_kind = "esim" if active_profile and active_profile.get("iccid") == iccid else ("unknown" if esim_supported else "physical")
+    eid = first_dashboard_value(sim_info.get("sim.properties.eid"))
+    esim_supported = bool(lpac_installed and (device_profiles or eid))
+    if active_profile and active_profile.get("iccid") == iccid:
+        active_sim_kind = "esim"
+    elif eid:
+        active_sim_kind = "esim"
+    elif device_profiles:
+        active_sim_kind = "unknown"
+    else:
+        active_sim_kind = "physical"
     signal_dbm = read_modem_signal_dbm(modem, device_id)
 
     return {
@@ -1910,7 +1935,7 @@ def build_device_status(
         "number": first_dashboard_value(modem.get("modem.generic.own-numbers.value[1]")),
         "iccid": iccid,
         "imsi": first_dashboard_value(sim_info.get("sim.properties.imsi")),
-        "eid": first_dashboard_value(sim_info.get("sim.properties.eid")),
+        "eid": eid,
         "pin_state": "",
         "operator_name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
         "operator_code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
@@ -1934,7 +1959,7 @@ def build_device_status(
         "capabilities": {
             "sms_supported": True,
             "data_supported": True,
-            "esim_supported": esim_supported or bool(first_dashboard_value(sim_info.get("sim.properties.eid"))),
+            "esim_supported": esim_supported,
             "lpac_supported": lpac_installed,
         },
         "profiles": device_profiles,
@@ -2226,29 +2251,32 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         "" if connection.get("gsm.username", "") == "--" else connection.get("gsm.username", ""),
     )
 
-    if lpac_installed:
+    modem, modem_error = get_modem_info()
+    if modem_error:
+        status_message = "基带当前离线或正在重连，稍等片刻后再刷新。"
+        if not is_transient_modem_error(modem_error):
+            errors.append(modem_error)
+
+    sim_info_for_profile_probe = get_modem_sim_info(modem) if modem else {}
+    has_euicc_hint = bool(first_dashboard_value(sim_info_for_profile_probe.get("sim.properties.eid")))
+    cached_profiles, cache_error = get_profile_cache_snapshot()
+    profiles = cached_profiles if has_euicc_hint else []
+    should_read_profiles = bool(lpac_installed and has_euicc_hint)
+
+    if should_read_profiles:
         try:
             profiles = refresh_profile_cache(force=True) if refresh_profiles else get_cached_profiles()[0]
-            if not profiles and not refresh_profiles:
-                cached_profiles, cache_error = get_cached_profiles()
-                profiles = cached_profiles
-                if cache_error:
-                    errors.append(f"读取 eSIM 列表失败：{cache_error}")
+            if cache_error and not profiles:
+                errors.append(f"读取 eSIM 列表失败：{cache_error}")
         except Exception as exc:
-            profiles = []
-            errors.append(f"读取 eSIM 列表失败：{exc}")
-    else:
-        profiles = []
+            profiles = cached_profiles
+            if has_euicc_hint:
+                errors.append(f"读取 eSIM 列表失败：{exc}")
 
     try:
         profiles = attach_profile_smsc_config(profiles)
     except Exception as exc:
         errors.append(str(exc))
-
-    modem, modem_error = get_modem_info()
-    if modem_error:
-        status_message = "基带当前离线或正在重连，稍等片刻后再刷新。"
-        errors.append(modem_error)
 
     primary_device_id = modem_device_id(modem) if modem else ""
     profiles = attach_profile_device_id(profiles, primary_device_id)
@@ -2300,12 +2328,13 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
                 continue
             device_messages, sms_error = list_sms(str(device.get("id", "")))
             if sms_error:
-                sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
+                if not is_transient_modem_error(sms_error):
+                    sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
                 continue
             sms_messages.extend(device_messages)
     else:
         sms_messages, sms_error = list_sms()
-        if sms_error:
+        if sms_error and not is_transient_modem_error(sms_error):
             sms_errors.append(sms_error)
     if sms_errors:
         if not status_message:

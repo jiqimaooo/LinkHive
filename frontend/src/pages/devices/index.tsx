@@ -184,7 +184,7 @@ function DeviceList({ devices, selectedDeviceId, onSelect }: { devices: DeviceSt
                 <div className="mt-1 truncate text-xs text-muted-foreground">IMEI {displayValue(device.imei, "--")}</div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   <Badge variant={device.registration === "home" || device.registration === "roaming" ? "default" : "outline"}>{formatRegistrationState(device.registration)}</Badge>
-                  <Badge variant="outline">{device.capabilities.esim_supported ? "eSIM" : "普通 SIM"}</Badge>
+                  <Badge variant="outline">{formatActiveSimKind(device.active_sim_kind)}</Badge>
                 </div>
               </div>
             </div>
@@ -235,7 +235,7 @@ function DeviceDetail({
                 {formatRegistrationState(device.registration)}
               </Badge>
               {device.source === "at_probe" ? <Badge variant="outline">AT 探测</Badge> : null}
-              <Badge variant="outline">{device.active_sim_kind === "esim" ? "eSIM" : device.active_sim_kind === "physical" ? "普通 SIM" : "SIM 类型未确认"}</Badge>
+              <Badge variant="outline">{formatActiveSimKind(device.active_sim_kind)}</Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
               {formatOperatorName(device.operator_name, device.operator_code || device.home_operator_code)} · {formatAccessTech(device.access_tech || "--")} · 信号 {displayValue(device.signal_dbm, "--")}
@@ -625,6 +625,12 @@ function ActionButton({ icon: Icon, title, desc, disabled, onClick }: { icon: ty
       <div className="mt-1 text-sm text-muted-foreground">{desc}</div>
     </button>
   )
+}
+
+function formatActiveSimKind(kind: string) {
+  if (kind === "esim") return "eSIM"
+  if (kind === "physical") return "普通 SIM"
+  return "SIM 类型未确认"
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {

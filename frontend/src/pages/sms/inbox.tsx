@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react"
 import {
   MessageCircleIcon,
   MessageSquarePlusIcon,
-  MoreHorizontalIcon,
   RefreshCwIcon,
   SearchIcon,
   SendIcon,
@@ -200,7 +199,6 @@ export default function SmsInboxPage() {
     <div className="flex min-h-[calc(100dvh-7rem)] flex-col gap-4">
       <section className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Messages</div>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">短信</h1>
           <p className="mt-1 text-sm text-muted-foreground">按号码聚合会话，查看连续对话并通过现有短信通道发送回复。</p>
         </div>
@@ -270,17 +268,14 @@ export default function SmsInboxPage() {
                     </div>
                   </button>
                 )
-              }) : (
-                <EmptyState icon={MessageCircleIcon} title="没有会话" description={searchText ? "没有匹配的短信会话。" : "收到或发送短信后会在这里形成会话。"} />
-              )}
+              }) : <ConversationListSkeleton searchText={searchText} />}
             </div>
           </ScrollArea>
         </aside>
 
         <main className="flex min-h-[32rem] min-w-0 flex-col">
-          {selectedConversation ? (
-            <>
-              <div className="flex items-center justify-between gap-3 border-b border-white/70 px-5 py-4 dark:border-white/10">
+          <div className="flex items-center justify-between gap-3 border-b border-white/70 px-5 py-4 dark:border-white/10">
+            {selectedConversation ? (
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h2 className="truncate text-lg font-semibold">{selectedConversation.title}</h2>
@@ -288,18 +283,11 @@ export default function SmsInboxPage() {
                   </div>
                   <p className="mt-1 truncate text-xs text-muted-foreground">{selectedConversation.deviceLabel} · {selectedConversation.device_id}</p>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={actionBusy || !selectedConversation.messages.length}
-                  onClick={() => { void runAction("resend_last_sms", { device_id: selectedDeviceId }, "重发最后一条短信") }}
-                >
-                  <MoreHorizontalIcon data-icon="inline-start" />
-                  重发最后一条
-                </Button>
-              </div>
+              ) : <EmptyConversationHeader />}
+          </div>
 
+          {selectedConversation ? (
+            <>
               <ScrollArea className="min-h-0 flex-1">
                 <div className="flex min-h-full flex-col gap-3 px-5 py-5">
                   {selectedConversation.messages.length ? selectedConversation.messages.map((message) => (
@@ -361,9 +349,7 @@ export default function SmsInboxPage() {
               </div>
             </>
           ) : (
-            <div className="flex min-h-full flex-1 items-center justify-center p-8">
-              <EmptyState icon={MessageCircleIcon} title="选择一个会话" description="左侧会话列表会展示收到和本次会话中发送的短信。" />
-            </div>
+            <EmptyConversationPane />
           )}
         </main>
       </section>
@@ -436,4 +422,57 @@ function shortTime(timestamp: string) {
   if (!timestamp) return "新建"
   const parts = timestamp.split(/\s+/)
   return parts[1]?.slice(0, 5) || parts[0] || "--"
+}
+
+function ConversationListSkeleton({ searchText }: { searchText: string }) {
+  return (
+    <div className="space-y-3 p-1">
+      <div className="rounded-2xl border border-dashed border-white/70 bg-white/36 px-4 py-5 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/5">
+        {searchText ? "没有匹配的短信会话。" : "暂无短信，会话会在收到或发送短信后自动出现。"}
+      </div>
+      {[0, 1, 2].map((item) => (
+        <div key={item} className="rounded-2xl border border-white/55 bg-white/34 px-3 py-3 dark:border-white/10 dark:bg-white/5">
+          <div className="flex items-start gap-3">
+            <div className="size-10 rounded-full bg-slate-200/80 dark:bg-slate-800" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="h-3 w-24 rounded-full bg-slate-200/80 dark:bg-slate-800" />
+              <div className="h-3 w-32 rounded-full bg-slate-100/90 dark:bg-slate-800/70" />
+              <div className="h-3 w-full rounded-full bg-slate-100/90 dark:bg-slate-800/70" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function EmptyConversationHeader() {
+  return (
+    <div className="min-w-0">
+      <div className="h-5 w-28 rounded-full bg-slate-200/80 dark:bg-slate-800" />
+      <div className="mt-2 h-3 w-44 rounded-full bg-slate-100/90 dark:bg-slate-800/70" />
+    </div>
+  )
+}
+
+function EmptyConversationPane() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-1 flex-col justify-end gap-3 px-5 py-5">
+        <div className="max-w-[72%] rounded-3xl rounded-bl-lg bg-white/52 px-4 py-3 dark:bg-white/8">
+          <div className="h-3 w-40 rounded-full bg-slate-200/80 dark:bg-slate-800" />
+          <div className="mt-3 h-3 w-56 rounded-full bg-slate-100/90 dark:bg-slate-800/70" />
+        </div>
+        <div className="ml-auto max-w-[72%] rounded-3xl rounded-br-lg bg-blue-600/18 px-4 py-3 dark:bg-blue-400/14">
+          <div className="h-3 w-48 rounded-full bg-blue-200/80 dark:bg-blue-900/70" />
+        </div>
+      </div>
+      <div className="border-t border-white/70 p-4 dark:border-white/10">
+        <div className="glass-panel flex items-center justify-between rounded-3xl p-3">
+          <span className="text-sm text-muted-foreground">选择会话或新建短信后开始发送。</span>
+          <SendIcon className="size-4 text-muted-foreground" />
+        </div>
+      </div>
+    </div>
+  )
 }

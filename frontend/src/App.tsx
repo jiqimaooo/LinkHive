@@ -22,7 +22,7 @@ function AppLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_12%_8%,rgba(219,234,254,0.72),transparent_28%),radial-gradient(circle_at_88%_4%,rgba(224,242,254,0.56),transparent_24%),linear-gradient(180deg,#f8fafc_0%,#eef4fb_100%)] text-slate-900 lg:h-dvh lg:overflow-hidden dark:bg-[radial-gradient(circle_at_12%_8%,rgba(30,64,175,0.24),transparent_30%),radial-gradient(circle_at_88%_4%,rgba(14,165,233,0.14),transparent_24%),linear-gradient(180deg,#020617_0%,#0f172a_100%)] dark:text-slate-100">
+    <div className="min-h-screen overflow-x-hidden bg-white text-slate-900 lg:h-dvh lg:overflow-hidden dark:bg-black dark:text-slate-100">
       <TopNav onOpenMenu={() => setMobileMenuOpen(true)} />
       <div className="grid min-h-screen min-w-0 pt-16 lg:h-dvh lg:min-h-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <Sidebar mobileMenuOpen={mobileMenuOpen} setMobileMenuOpen={setMobileMenuOpen} />
@@ -62,7 +62,7 @@ export default function App() {
 
   if (!authStatus) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_20%_8%,rgba(219,234,254,0.72),transparent_30%),linear-gradient(180deg,#f8fafc_0%,#eef4fb_100%)] text-slate-600 dark:bg-[linear-gradient(180deg,#020617_0%,#0f172a_100%)] dark:text-slate-300">
+      <div className="flex min-h-screen items-center justify-center bg-white text-slate-600 dark:bg-black dark:text-slate-300">
         <LoaderCircleIcon className="mr-2 size-5 animate-spin" />
         正在进入 LinkHive...
       </div>

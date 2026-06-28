@@ -26,9 +26,6 @@ const MAIN_MENU = [
     title: "设备管理",
     path: "/devices",
     icon: MonitorIcon,
-    children: [
-      { title: "设备列表", path: "/devices", icon: MonitorIcon },
-    ],
   },
   {
     title: "短信",
