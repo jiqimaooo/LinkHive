@@ -1051,6 +1051,8 @@ def enumerate_direct_modems(force_refresh: bool = False) -> list[tuple[dict[str,
 def get_direct_modem_info(device_id: str = "", force_refresh: bool = False) -> tuple[dict[str, str], Optional[str]]:
     items = enumerate_direct_modems(force_refresh=force_refresh)
     target = str(device_id or "").strip()
+    if target.lower() in {"any", "modem-any", "default"}:
+        target = ""
     if target:
         for modem, error in items:
             if _status_matches_device_id(modem, target):

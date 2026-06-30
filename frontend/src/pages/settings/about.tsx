@@ -115,7 +115,7 @@ export default function AboutPage() {
                 <Badge variant="secondary">SIM 管理平台</Badge>
               </div>
               <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-                面向蜂窝模块、实体 SIM 与 eSIM 的轻量管理控制台，聚合设备状态、短信、通知转发、定时任务和安全设置。
+                面向蜂窝模块、实体 SIM 与 eSIM 的轻量管理控制台，聚合设备状态、短信、通知转发、定时任务和安全中心。
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <ProductPill icon={ShieldCheckIcon} label="本地部署" />

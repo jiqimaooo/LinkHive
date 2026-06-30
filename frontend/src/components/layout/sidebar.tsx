@@ -10,7 +10,6 @@ import {
   TerminalIcon,
   SendIcon,
   XIcon,
-  UserCircleIcon,
 } from "lucide-react"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
@@ -42,8 +41,7 @@ const MAIN_MENU = [
     path: "/settings",
     icon: Settings2Icon,
     children: [
-      { title: "个人中心", path: "/settings/profile", icon: UserCircleIcon },
-      { title: "安全设置", path: "/settings/security", icon: ShieldCheckIcon },
+      { title: "安全中心", path: "/settings/security", icon: ShieldCheckIcon },
       { title: "关于", path: "/settings/about", icon: InfoIcon },
     ],
   },
@@ -72,7 +70,7 @@ export function Sidebar({
   }
 
   const isChildActive = (path: string) => {
-    if (path === "/sms" || path === "/settings/profile" || path === "/devices") return location.pathname === path
+    if (path === "/sms" || path === "/devices") return location.pathname === path
     return location.pathname.startsWith(path)
   }
 

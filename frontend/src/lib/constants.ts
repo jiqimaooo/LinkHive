@@ -338,8 +338,5 @@ export function normalizeNotificationTargets(targets: NotificationTarget[] = [])
     seenTypes.add(parsed.type)
     normalized.push(parsed)
   }
-  return normalized.sort(
-    (left, right) =>
-      NOTIFICATION_CHANNEL_ORDER.indexOf(left.type) - NOTIFICATION_CHANNEL_ORDER.indexOf(right.type),
-  )
+  return normalized
 }

@@ -80,7 +80,8 @@ def normalize_notification_target(target: dict[str, Any]) -> dict[str, Any]:
         enabled = enabled_raw
     else:
         enabled = str(enabled_raw).strip().lower() not in {"0", "false", "no", "off", ""}
-    channel_type = infer_channel_type(url)
+    raw_type = str(target.get("type", "")).strip().lower()
+    channel_type = raw_type or infer_channel_type(url)
     normalized_label = label or channel_type_label(channel_type)
     target_id = str(target.get("id", "")).strip() or _stable_target_id(normalized_label, url)
     return {
@@ -198,12 +199,7 @@ def send_apprise_notification(targets: list[dict[str, Any]], title: str, body: s
     for target in configured:
         app.add(str(target["url"]))
 
-    notify_kwargs: dict[str, Any] = {"title": title, "body": body}
-    icon_path = resolve_notification_icon_path()
-    if icon_path:
-        notify_kwargs["attach"] = icon_path
-
-    result = app.notify(**notify_kwargs)
+    result = app.notify(title=title, body=body)
     if not result:
         raise RuntimeError("Apprise 推送失败")
     return configured_channel_labels(configured)

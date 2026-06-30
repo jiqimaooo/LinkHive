@@ -254,6 +254,7 @@ export type ActionName =
   | "download_esim_profile"
   | "recover_modem"
   | "restart_sms"
+  | "test_notification"
   | "send_test_sms"
   | "save_profile_smsc"
   | "run_keepalive_task"

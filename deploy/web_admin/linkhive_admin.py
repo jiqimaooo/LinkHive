@@ -183,6 +183,9 @@ SLOW_PROBE_CACHE_LOCK = threading.Lock()
 IMS_STATUS_CACHE_SECONDS = 300.0
 SMS_LIST_CACHE_SECONDS = 20.0
 SMS_STORAGE_CACHE_SECONDS = 60.0
+SMS_VISIBLE_CACHE_SECONDS = 300.0
+SMS_VISIBLE_CACHE: dict[str, dict[str, Any]] = {}
+SMS_VISIBLE_CACHE_LOCK = threading.Lock()
 
 
 def run_command(args: list[str], check: bool = True, env: Optional[dict[str, str]] = None) -> subprocess.CompletedProcess[str]:
@@ -205,6 +208,9 @@ def is_transient_modem_error(message: str) -> bool:
         "modem is not registered",
         "could not find a registered modem",
         "operation only allowed in",
+        "未找到目标设备",
+        "未检测到 quectel 蜂窝模组",
+        "未找到 at 端口",
     )
     return any(marker in normalized for marker in transient_markers)
 
@@ -1774,6 +1780,43 @@ def cached_list_sms(device_id: str) -> tuple[list[dict[str, str]], Optional[str]
     )
 
 
+def cached_visible_sms_key(device_id: str) -> str:
+    return str(device_id or "primary")
+
+
+def remember_visible_sms(device_id: str, messages: list[dict[str, str]]) -> None:
+    if not messages:
+        return
+    with SMS_VISIBLE_CACHE_LOCK:
+        SMS_VISIBLE_CACHE[cached_visible_sms_key(device_id)] = {
+            "updated_at": time.time(),
+            "messages": clone_cached_value(messages),
+        }
+
+
+def last_visible_sms(device_id: str) -> list[dict[str, str]]:
+    now = time.time()
+    with SMS_VISIBLE_CACHE_LOCK:
+        entry = SMS_VISIBLE_CACHE.get(cached_visible_sms_key(device_id))
+        if not entry:
+            return []
+        if now - float(entry.get("updated_at") or 0.0) > SMS_VISIBLE_CACHE_SECONDS:
+            SMS_VISIBLE_CACHE.pop(cached_visible_sms_key(device_id), None)
+            return []
+        return clone_cached_value(entry.get("messages", []))
+
+
+def stable_cached_list_sms(device_id: str) -> tuple[list[dict[str, str]], Optional[str]]:
+    messages, error = cached_list_sms(device_id)
+    if messages:
+        remember_visible_sms(device_id, messages)
+        return messages, error
+    fallback = last_visible_sms(device_id)
+    if fallback and (not error or is_transient_modem_error(error)):
+        return fallback, None
+    return messages, error
+
+
 def cached_sms_storage_counts(modem: dict[str, str], fallback_count: int) -> dict[str, Any]:
     device_id = modem_device_id(modem)
     default = {"device_count": fallback_count, "sim_count": 0, "readable_count": fallback_count}
@@ -2363,16 +2406,18 @@ def get_status(refresh_profiles: bool = False, refresh_devices: bool = False) ->
     sms_errors: list[str] = []
     if devices:
         for device in devices:
+            device_id = str(device.get("id", ""))
             if not device_ready_for_sms_read(device):
+                sms_messages.extend(last_visible_sms(device_id))
                 continue
-            device_messages, sms_error = cached_list_sms(str(device.get("id", "")))
+            device_messages, sms_error = stable_cached_list_sms(device_id)
             if sms_error:
                 if not is_transient_modem_error(sms_error):
                     sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
                 continue
             sms_messages.extend(device_messages)
     elif not modem_error:
-        sms_messages, sms_error = cached_list_sms("")
+        sms_messages, sms_error = stable_cached_list_sms("")
         if sms_error and not is_transient_modem_error(sms_error):
             sms_errors.append(sms_error)
     if sms_errors:
@@ -2743,21 +2788,34 @@ def save_notifications_config(ctx: ActionContext, payload: dict[str, Any]) -> No
             raise ValueError("启用中的通知渠道必须填写 Apprise URL")
         sanitized_targets.append(normalize_notification_target(raw_target))
 
-    if not sanitized_targets:
-        raise ValueError("请至少保留一个通知渠道")
-    if not configured_channel_labels(sanitized_targets):
-        raise ValueError("请至少启用一个通知渠道")
-
     config = ensure_notification_config(read_env_config(NOTIFICATION_CONFIG_PATH))
     save_notification_targets_in_config(config, sanitized_targets)
     write_env_config(NOTIFICATION_CONFIG_PATH, config)
-    ctx.log(f"通知渠道配置已写入：{'、'.join(configured_channel_labels(sanitized_targets))}")
+    configured_labels = configured_channel_labels(sanitized_targets)
+    if configured_labels:
+        ctx.log(f"通知渠道配置已写入：{'、'.join(configured_labels)}")
+    else:
+        ctx.log("通知渠道配置已清空或全部禁用")
     run_logged_command(
         ctx,
         ["systemctl", "restart", SMS_FORWARDER_SERVICE],
         check=False,
         success_message="短信转发服务已重启",
     )
+
+
+def test_notification_channel(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    raw_target = payload.get("target", {})
+    if not isinstance(raw_target, dict):
+        raise ValueError("测试通知渠道配置格式不正确")
+    target = normalize_notification_target(raw_target)
+    if not str(target.get("url", "")).strip():
+        raise ValueError("测试通知渠道缺少 Apprise URL")
+    target["enabled"] = True
+    title = "LinkHive 测试通知"
+    body = "这是一条来自 LinkHive 的通知转发测试消息。"
+    labels = send_apprise_notification([target], title, body)
+    ctx.log(f"测试通知已发送：{'、'.join(labels)}")
 
 
 def save_keepalive_settings(ctx: ActionContext, payload: dict[str, Any]) -> None:
@@ -3179,6 +3237,9 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
     if action == "save_notifications":
         save_notifications_config(ctx, payload)
         return
+    if action == "test_notification":
+        test_notification_channel(ctx, payload)
+        return
     if action == "save_keepalive":
         save_keepalive_settings(ctx, payload)
         return
@@ -3543,10 +3604,8 @@ class AppHandler(BaseHTTPRequestHandler):
             content_type = "application/json; charset=utf-8"
         stat = candidate.stat()
         cache_control = "public, max-age=3600"
-        if candidate.suffix == ".html" or candidate.name.endswith(".webmanifest"):
+        if candidate.suffix in {".html", ".js", ".css"} or candidate.name.endswith(".webmanifest"):
             cache_control = "no-store, max-age=0"
-        elif re.search(r"-[A-Za-z0-9_-]{8,}\.(?:js|css)$", candidate.name):
-            cache_control = "public, max-age=31536000, immutable"
         self._write_bytes(
             200,
             content_type or "application/octet-stream",

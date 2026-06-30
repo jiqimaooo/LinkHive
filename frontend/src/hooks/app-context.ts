@@ -39,7 +39,7 @@ export type AppContextType = {
   setNotificationTargets: (updater: (current: NotificationFormTarget[]) => NotificationFormTarget[]) => void
   newNotificationType: ChannelKind
   setNewNotificationType: (value: ChannelKind) => void
-  saveNotifications: () => Promise<void>
+  saveNotifications: (targetsOverride?: NotificationFormTarget[]) => Promise<boolean>
 
   // Keepalive
   keepaliveSettings: KeepaliveSettings

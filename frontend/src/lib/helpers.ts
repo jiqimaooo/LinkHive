@@ -192,6 +192,8 @@ export function friendlyActionName(action: ActionName) {
       return "重启基带"
     case "restart_sms":
       return "重启短信转发"
+    case "test_notification":
+      return "测试通知渠道"
     case "send_test_sms":
       return "发送测试短信"
     case "save_profile_smsc":

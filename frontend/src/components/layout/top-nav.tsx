@@ -5,8 +5,8 @@ import {
   LogOutIcon,
   MenuIcon,
   MoonIcon,
-  UserCircleIcon,
   RefreshCwIcon,
+  ShieldCheckIcon,
   SunIcon,
 } from "lucide-react"
 
@@ -141,11 +141,11 @@ export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-slate-800 transition-colors hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/10"
                   onClick={() => {
                     setUserMenuOpen(false)
-                    navigate("/settings/profile")
+                    navigate("/settings/security")
                   }}
                 >
-                  <UserCircleIcon className="size-4 text-slate-500 dark:text-slate-400" />
-                  个人中心
+                  <ShieldCheckIcon className="size-4 text-slate-500 dark:text-slate-400" />
+                  安全中心
                 </button>
                 <button
                   type="button"

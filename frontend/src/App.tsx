@@ -13,7 +13,6 @@ import DevicesPage from "@/pages/devices"
 import SmsInboxPage from "@/pages/sms/inbox"
 import SmsForwardingPage from "@/pages/sms/forwarding"
 import KeepalivePage from "@/pages/sim-cards/keepalive"
-import ProfilePage from "@/pages/settings/profile"
 import SecurityPage from "@/pages/settings/security"
 import AboutPage from "@/pages/settings/about"
 import LogsPage from "@/pages/logs"
@@ -41,9 +40,9 @@ function AppLayout() {
               <Route path="/sim-cards" element={<Navigate to="/devices/esim" replace />} />
               <Route path="/sim-cards/profiles" element={<Navigate to="/devices/esim" replace />} />
               <Route path="/sim-cards/keepalive" element={<Navigate to="/sms/tasks" replace />} />
-              <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
+              <Route path="/settings" element={<Navigate to="/settings/security" replace />} />
               <Route path="/settings/mode" element={<Navigate to="/devices" replace />} />
-              <Route path="/settings/profile" element={<ProfilePage />} />
+              <Route path="/settings/profile" element={<Navigate to="/settings/security" replace />} />
               <Route path="/settings/security" element={<SecurityPage />} />
               <Route path="/settings/about" element={<AboutPage />} />
               <Route path="/logs" element={<LogsPage />} />

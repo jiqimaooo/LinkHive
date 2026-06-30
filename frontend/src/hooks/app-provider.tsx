@@ -208,6 +208,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return
         }
       } catch (error) {
+        window.localStorage.removeItem(ACTIVE_ACTION_KEY)
+        setActiveAction(null)
+        setSubmittingActionLabel(null)
         appendLog({
           time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
           level: "error",
@@ -269,25 +272,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeAction, appendLog, pollAction, submittingActionLabel])
 
-  const saveNotifications = useCallback(async () => {
+  const saveNotifications = useCallback(async (targetsOverride?: NotificationFormTarget[]) => {
     if (activeAction || submittingActionLabel) {
       toast.info("当前已有任务在执行，请稍等")
-      return
+      return false
     }
 
     try {
-      const payloadTargets = notificationTargets.map((target, index) => {
+      const targetsToSave = targetsOverride ?? notificationTargets
+      const payloadTargets = targetsToSave.map((target, index) => {
         const definition = NOTIFICATION_CHANNEL_DEFINITIONS[target.type]
-        const missingField = definition.fields.find(
-          (field) => field.required && !notificationFieldValue(target, field.key).trim(),
-        )
-        if (missingField) {
-          throw new Error(`${definition.label} 还缺少 ${missingField.label}`)
-        }
-
         const url = buildNotificationUrl(target)
-        if (!url.trim()) {
-          throw new Error(`${definition.label} 配置还不完整`)
+        if (target.enabled) {
+          const missingField = definition.fields.find(
+            (field) => field.required && !notificationFieldValue(target, field.key).trim(),
+          )
+          if (missingField) {
+            throw new Error(`${definition.label} 还缺少 ${missingField.label}`)
+          }
+
+          if (!url.trim()) {
+            throw new Error(`${definition.label} 配置还不完整`)
+          }
         }
 
         return {
@@ -330,6 +336,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         message: "通知渠道已保存",
       })
       toast.success("通知渠道配置已保存")
+      return true
     } catch (error) {
       setSubmittingActionLabel(null)
       const message = error instanceof Error ? error.message : "保存通知渠道失败"
@@ -339,6 +346,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         message,
       })
       toast.error(message)
+      return false
     }
   }, [activeAction, appendLog, notificationTargets, refreshStatus, submittingActionLabel, syncFormsFromStatus])
 
