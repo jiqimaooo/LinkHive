@@ -46,7 +46,17 @@ from notification_utils import (  # noqa: E402
     save_notification_targets_in_config,
     send_apprise_notification,
 )
-from modem_direct import at_command, enumerate_direct_modems, get_direct_modem_info, list_sms_via_at, send_sms_via_at  # noqa: E402
+from modem_direct import (  # noqa: E402
+    at_command,
+    enumerate_direct_modems,
+    extract_eid_from_at_response,
+    get_direct_modem_info,
+    known_euicc_hardware,
+    list_sms_via_at,
+    operator_name_for_code,
+    parse_spn_response,
+    send_sms_via_at,
+)
 
 
 HOST = os.environ.get("FOURG_WIFI_ADMIN_HOST", "0.0.0.0")
@@ -168,6 +178,11 @@ DASHBOARD_TRAFFIC_BASELINE: dict[str, Any] = {"date": "", "rx": 0, "tx": 0, "ifa
 DASHBOARD_TRAFFIC_HISTORY: deque[dict[str, Any]] = deque(maxlen=48)
 RAW_SIM_PROBE_CACHE: dict[str, Any] = {"updated_at": 0.0, "items": [], "error": ""}
 RAW_SIM_PROBE_LOCK = threading.Lock()
+SLOW_PROBE_CACHE: dict[str, dict[str, Any]] = {}
+SLOW_PROBE_CACHE_LOCK = threading.Lock()
+IMS_STATUS_CACHE_SECONDS = 300.0
+SMS_LIST_CACHE_SECONDS = 20.0
+SMS_STORAGE_CACHE_SECONDS = 60.0
 
 
 def run_command(args: list[str], check: bool = True, env: Optional[dict[str, str]] = None) -> subprocess.CompletedProcess[str]:
@@ -222,6 +237,11 @@ def is_positive_capability_hint(value: Any) -> bool:
 
 def has_esim_capability_hint(modem: dict[str, str], sim_info: Optional[dict[str, str]] = None) -> bool:
     sim_info = sim_info or {}
+    if known_euicc_hardware(
+        first_dashboard_value(modem.get("modem.generic.manufacturer")),
+        first_dashboard_value(modem.get("modem.generic.model")),
+    ):
+        return True
     return any(
         is_positive_capability_hint(value)
         for value in (
@@ -684,6 +704,9 @@ def normalize_signal_dbm(raw_value: str) -> str:
 
 def modem_at_ports(modem: dict[str, str]) -> list[str]:
     ports: list[str] = []
+    direct_port = str(modem.get("linkhive.at_port") or "").strip()
+    if direct_port:
+        ports.append(direct_port)
     for key, value in modem.items():
         if not key.startswith("modem.generic.ports.value"):
             continue
@@ -709,6 +732,7 @@ def run_at_command(port_path: str, command: str, timeout_seconds: float = 1.2) -
         attrs[6][termios.VMIN] = 0
         attrs[6][termios.VTIME] = 5
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIOFLUSH)
         os.write(fd, f"{command}\r".encode())
         deadline = time.time() + timeout_seconds
         chunks: list[bytes] = []
@@ -794,6 +818,12 @@ def read_raw_at_snapshot(port_path: str) -> dict[str, Any]:
         "operator": "AT+COPS?",
         "simstat": "AT+QSIMSTAT?",
         "initstat": "AT+QINISTAT",
+        "eid": "AT+EID",
+        "qesim_eid": 'AT+QESIM="eid"',
+        "qeuicc": "AT+QEUICC?",
+        "qeuiccid": "AT+QEUICCID?",
+        "qspn": "AT+QSPN",
+        "spn": "AT+CRSM=176,28486,0,0,17",
     }
     responses: dict[str, str] = {}
     for key, command in commands.items():
@@ -814,6 +844,7 @@ def read_raw_at_snapshot(port_path: str) -> dict[str, Any]:
     imsi = parse_at_value(responses.get("imsi", ""), [r"^(\d{5,})$"])
     pin_state = parse_at_value(responses.get("pin", ""), [r"\+CPIN:\s*([A-Z0-9 _-]+)"])
     sim_present = bool(iccid or imsi or pin_state.upper() == "READY")
+    home_operator_code = imsi[:5] if len(imsi) >= 5 else ""
 
     model = ""
     manufacturer = ""
@@ -826,6 +857,9 @@ def read_raw_at_snapshot(port_path: str) -> dict[str, Any]:
         manufacturer = identity_lines[0]
     if len(identity_lines) >= 2:
         model = identity_lines[1]
+    eid = first_dashboard_value(*(extract_eid_from_at_response(value) for value in responses.values()))
+    euicc = "supported" if eid or known_euicc_hardware(manufacturer, model) else ""
+    spn = first_dashboard_value(*(parse_spn_response(value) for value in responses.values()))
 
     return {
         "port": port_path,
@@ -833,7 +867,11 @@ def read_raw_at_snapshot(port_path: str) -> dict[str, Any]:
         "model": model,
         "iccid": iccid,
         "imsi": imsi,
-        "operator_code": imsi[:5] if len(imsi) >= 5 else "",
+        "eid": eid,
+        "euicc": euicc,
+        "operator_code": home_operator_code,
+        "direct.home-operator-name": first_dashboard_value(spn, operator_name_for_code(home_operator_code)),
+        "direct.home-operator-code": home_operator_code,
         "pin_state": pin_state,
         "sim_present": sim_present,
         "responses": {key: clean_at_response(value, commands[key]) for key, value in responses.items()},
@@ -1590,12 +1628,12 @@ def modem_selector_for_device_id(device_id: str = "") -> str:
     return target.removeprefix("imei-") if target.startswith("imei-") else target
 
 
-def get_modem_info(device_id: str = "") -> tuple[dict[str, str], Optional[str]]:
-    return get_direct_modem_info()
+def get_modem_info(device_id: str = "", force_refresh: bool = False) -> tuple[dict[str, str], Optional[str]]:
+    return get_direct_modem_info(device_id, force_refresh=force_refresh)
 
 
-def enumerate_modem_infos() -> list[tuple[dict[str, str], Optional[str]]]:
-    return enumerate_direct_modems()
+def enumerate_modem_infos(force_refresh: bool = False) -> list[tuple[dict[str, str], Optional[str]]]:
+    return enumerate_direct_modems(force_refresh=force_refresh)
 
 
 def modem_device_id(modem: dict[str, str]) -> str:
@@ -1677,6 +1715,74 @@ def first_dashboard_value(*values: Any) -> str:
         if normalized:
             return normalized
     return ""
+
+
+def clone_cached_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [dict(item) if isinstance(item, dict) else item for item in value]
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, tuple):
+        return tuple(clone_cached_value(item) for item in value)
+    return value
+
+
+def cached_slow_probe(key: str, ttl_seconds: float, default: Any, producer: Callable[[], Any]) -> Any:
+    now = time.time()
+    with SLOW_PROBE_CACHE_LOCK:
+        entry = SLOW_PROBE_CACHE.setdefault(key, {"updated_at": 0.0, "value": clone_cached_value(default), "running": False})
+        if now - float(entry.get("updated_at") or 0) < ttl_seconds:
+            return clone_cached_value(entry.get("value", default))
+        if not entry.get("running"):
+            entry["running"] = True
+
+            def refresh() -> None:
+                success = True
+                try:
+                    value = producer()
+                except Exception:
+                    success = False
+                    value = clone_cached_value(default)
+                with SLOW_PROBE_CACHE_LOCK:
+                    entry["value"] = value
+                    entry["updated_at"] = time.time() if success else 0.0
+                    entry["running"] = False
+
+            threading.Thread(target=refresh, daemon=True).start()
+        return clone_cached_value(entry.get("value", default))
+
+
+def cached_ims_status(modem: dict[str, str], modem_error: Optional[str]) -> dict[str, Any]:
+    default = {"ims_supported": False, "volte_enabled": False, "vowifi_enabled": False}
+    if modem_error:
+        return default
+    device_id = modem_device_id(modem)
+    return cached_slow_probe(
+        f"ims:{device_id}",
+        IMS_STATUS_CACHE_SECONDS,
+        default,
+        lambda: read_ims_status(modem),
+    )
+
+
+def cached_list_sms(device_id: str) -> tuple[list[dict[str, str]], Optional[str]]:
+    return cached_slow_probe(
+        f"sms-list:{device_id or 'primary'}",
+        SMS_LIST_CACHE_SECONDS,
+        ([], None),
+        lambda: list_sms(device_id),
+    )
+
+
+def cached_sms_storage_counts(modem: dict[str, str], fallback_count: int) -> dict[str, Any]:
+    device_id = modem_device_id(modem)
+    default = {"device_count": fallback_count, "sim_count": 0, "readable_count": fallback_count}
+    return cached_slow_probe(
+        f"sms-storage:{device_id}",
+        SMS_STORAGE_CACHE_SECONDS,
+        default,
+        lambda: read_sms_storage_counts(modem, fallback_count),
+    )
 
 
 def get_modem_sim_info(modem: dict[str, str]) -> dict[str, str]:
@@ -1798,9 +1904,9 @@ def build_dashboard_snapshot(
     access_tech = first_dashboard_value(modem.get("modem.generic.access-technologies.value[1]"))
     registration = first_dashboard_value(modem.get("modem.3gpp.registration-state"))
     operator_name = first_dashboard_value(modem.get("modem.3gpp.operator-name"))
-    home_operator_name = first_dashboard_value(sim_info.get("sim.properties.operator-name"))
+    home_operator_name = first_dashboard_value(modem.get("direct.home-operator-name"))
     home_operator_code = first_dashboard_value(
-        sim_info.get("sim.properties.operator-code"),
+        modem.get("direct.home-operator-code"),
         str(sim_info.get("sim.properties.imsi", ""))[:5],
     )
 
@@ -1895,9 +2001,9 @@ def build_device_status(
         "pin_state": "",
         "operator_name": first_dashboard_value(modem.get("modem.3gpp.operator-name")),
         "operator_code": first_dashboard_value(modem.get("modem.3gpp.operator-code")),
-        "home_operator": first_dashboard_value(sim_info.get("sim.properties.operator-name")),
+        "home_operator": first_dashboard_value(modem.get("direct.home-operator-name")),
         "home_operator_code": first_dashboard_value(
-            sim_info.get("sim.properties.operator-code"),
+            modem.get("direct.home-operator-code"),
             str(sim_info.get("sim.properties.imsi", ""))[:5],
         ),
         "registration": registration,
@@ -1933,10 +2039,14 @@ def build_raw_probe_device(snapshot: dict[str, Any], lpac_installed: bool) -> di
     iccid = str(snapshot.get("iccid") or "").strip()
     imsi = str(snapshot.get("imsi") or "").strip()
     port = str(snapshot.get("port") or "").strip()
-    has_euicc_hint = is_positive_capability_hint(snapshot.get("eid")) or is_positive_capability_hint(snapshot.get("euicc"))
     device_id = f"raw-sim-{iccid}" if iccid else f"raw-port-{Path(port).name or uuid.uuid4().hex[:8]}"
     model = str(snapshot.get("model") or "").strip()
     manufacturer = str(snapshot.get("manufacturer") or "").strip()
+    has_euicc_hint = (
+        is_positive_capability_hint(snapshot.get("eid"))
+        or is_positive_capability_hint(snapshot.get("euicc"))
+        or known_euicc_hardware(manufacturer, model)
+    )
     label = " ".join(part for part in [manufacturer, model] if part) or f"AT 设备 {Path(port).name}"
 
     return {
@@ -1957,12 +2067,15 @@ def build_raw_probe_device(snapshot: dict[str, Any], lpac_installed: bool) -> di
         "number": "",
         "iccid": iccid,
         "imsi": imsi,
-        "eid": "",
+        "eid": str(snapshot.get("eid") or "").strip(),
         "pin_state": str(snapshot.get("pin_state") or ""),
         "operator_name": "",
         "operator_code": "",
-        "home_operator": "",
-        "home_operator_code": str(snapshot.get("operator_code") or ""),
+        "home_operator": str(
+            snapshot.get("direct.home-operator-name")
+            or operator_name_for_code(str(snapshot.get("operator_code") or ""))
+        ),
+        "home_operator_code": str(snapshot.get("direct.home-operator-code") or snapshot.get("operator_code") or ""),
         "registration": "probe-only",
         "state": "detected",
         "signal": "0",
@@ -1992,8 +2105,12 @@ def build_raw_probe_device(snapshot: dict[str, Any], lpac_installed: bool) -> di
     }
 
 
-def build_devices_snapshot(profiles: list[dict[str, Any]], lpac_installed: bool) -> list[dict[str, Any]]:
-    modem_items = [(modem, error) for modem, error in enumerate_modem_infos() if modem and not error]
+def build_devices_snapshot(
+    profiles: list[dict[str, Any]],
+    lpac_installed: bool,
+    force_refresh: bool = False,
+) -> list[dict[str, Any]]:
+    modem_items = [(modem, error) for modem, error in enumerate_modem_infos(force_refresh=force_refresh) if modem and not error]
     if not modem_items:
         raw_items, _probe_error = probe_raw_sim_devices()
         return [build_raw_probe_device(item, lpac_installed) for item in raw_items]
@@ -2004,17 +2121,17 @@ def build_devices_snapshot(profiles: list[dict[str, Any]], lpac_installed: bool)
     ]
 
 
-def device_status_for_id(device_id: str = "") -> dict[str, Any]:
-    modem, _modem_error = get_modem_info(device_id)
+def device_status_for_id(device_id: str = "", force_refresh: bool = False) -> dict[str, Any]:
+    modem, _modem_error = get_modem_info(device_id, force_refresh=force_refresh)
     sim_info = get_modem_sim_info(modem) if modem else {}
     cached_profiles, _cache_error = get_profile_cache_snapshot()
     profiles = cached_profiles if has_esim_capability_hint(modem, sim_info) else []
-    devices = build_devices_snapshot(profiles, os.path.exists("/opt/lpac/lpac"))
+    devices = build_devices_snapshot(profiles, os.path.exists("/opt/lpac/lpac"), force_refresh=force_refresh)
     if not devices:
         return {}
     target = str(device_id or "").strip()
     if target:
-        return next((device for device in devices if device.get("id") == target), devices[0])
+        return next((device for device in devices if device.get("id") == target), {})
     return devices[0]
 
 
@@ -2079,7 +2196,7 @@ def send_sms_message(
 ) -> None:
     ctx.log(f"通过直连基带发送短信：{number}")
     try:
-        send_sms_via_at(number, text)
+        send_sms_via_at(number, text, device_id)
     except Exception as exc:
         raise RuntimeError(f"{failure_prefix}{exc}") from exc
     ctx.log(success_message)
@@ -2159,7 +2276,7 @@ def notify_keepalive_result(
         ctx.log(f"保活结果通知发送失败：{exc}", "warning")
 
 
-def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
+def get_status(refresh_profiles: bool = False, refresh_devices: bool = False) -> dict[str, Any]:
     global PROFILE_CACHE_ERROR
     status_message = ""
     errors: list[str] = []
@@ -2175,7 +2292,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         "" if connection.get("gsm.username", "") == "--" else connection.get("gsm.username", ""),
     )
 
-    modem, modem_error = get_modem_info()
+    modem, modem_error = get_modem_info(force_refresh=refresh_devices)
     if modem_error:
         status_message = "基带当前离线或正在重连，稍等片刻后再刷新。"
         if not is_transient_modem_error(modem_error):
@@ -2205,7 +2322,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
 
     primary_device_id = modem_device_id(modem) if modem else ""
     profiles = attach_profile_device_id(profiles, primary_device_id)
-    devices = build_devices_snapshot(profiles, lpac_installed)
+    devices = build_devices_snapshot(profiles, lpac_installed, force_refresh=refresh_devices)
     esim_enabled = any(device.get("capabilities", {}).get("esim_supported") for device in devices)
     if devices:
         current_sim_type = str(devices[0].get("active_sim_kind") or current_sim_type)
@@ -2240,10 +2357,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
 
     signal_dbm = read_modem_signal_dbm(modem)
 
-    try:
-        ims_status = read_ims_status(modem) if not modem_error else {"ims_supported": False, "volte_enabled": False, "vowifi_enabled": False}
-    except Exception:
-        ims_status = {"ims_supported": False, "volte_enabled": False, "vowifi_enabled": False}
+    ims_status = cached_ims_status(modem, modem_error)
 
     sms_messages: list[dict[str, str]] = []
     sms_errors: list[str] = []
@@ -2251,14 +2365,14 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
         for device in devices:
             if not device_ready_for_sms_read(device):
                 continue
-            device_messages, sms_error = list_sms(str(device.get("id", "")))
+            device_messages, sms_error = cached_list_sms(str(device.get("id", "")))
             if sms_error:
                 if not is_transient_modem_error(sms_error):
                     sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
                 continue
             sms_messages.extend(device_messages)
     elif not modem_error:
-        sms_messages, sms_error = list_sms()
+        sms_messages, sms_error = cached_list_sms("")
         if sms_error and not is_transient_modem_error(sms_error):
             sms_errors.append(sms_error)
     if sms_errors:
@@ -2266,7 +2380,7 @@ def get_status(refresh_profiles: bool = False) -> dict[str, Any]:
             status_message = "暂时拿不到部分短信列表，可能是基带还在重新注册。"
         errors.extend(sms_errors)
     sms_messages.sort(key=lambda item: int(item.get("id") or "0"), reverse=True)
-    sms_storage = read_sms_storage_counts(modem, len(sms_messages))
+    sms_storage = cached_sms_storage_counts(modem, len(sms_messages))
     # KPI 展示以当前可读取的短信列表为准，避免 ME/SM 存储计数重复相加。
     sms_storage["readable_count"] = len(sms_messages)
 
@@ -2540,10 +2654,15 @@ def lpac_runtime_env(device: dict[str, Any], apdu_mode: str) -> dict[str, str]:
     if os.path.isdir(qmi_lib_path):
         current_library_path = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = f"{qmi_lib_path}:{current_library_path}" if current_library_path else qmi_lib_path
-    qmi_device = find_qmi_device_path()
+    probe = device.get("probe") if isinstance(device.get("probe"), dict) else {}
+    qmi_device = str(probe.get("qmi_path") or "").strip()
+    if not qmi_device:
+        modem, _error = get_modem_info(str(device.get("id") or ""))
+        qmi_device = first_dashboard_value(modem.get("linkhive.qmi_path"))
+    if not qmi_device:
+        qmi_device = find_qmi_device_path() or ""
     if qmi_device:
         env["LPAC_APDU_QMI_DEVICE"] = qmi_device
-    probe = device.get("probe") if isinstance(device.get("probe"), dict) else {}
     at_port = str(probe.get("port") or "").strip()
     if not at_port:
         modem, _error = get_modem_info(str(device.get("id") or ""))
@@ -3540,7 +3659,8 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             try:
                 refresh_profiles = "refresh_profiles=1" in parsed.query
-                self._write_json(200, get_status(refresh_profiles=refresh_profiles))
+                refresh_devices = "refresh_devices=1" in parsed.query
+                self._write_json(200, get_status(refresh_profiles=refresh_profiles, refresh_devices=refresh_devices))
             except Exception as exc:
                 self._write_json(500, {"error": str(exc)})
             return

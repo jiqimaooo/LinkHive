@@ -7,18 +7,25 @@ from pathlib import Path
 from typing import Any, Optional
 import errno
 import fcntl
+import json
 import os
 import re
 import select
 import struct
 import termios
 import time
+import xml.etree.ElementTree as ET
 
 
 QUECTEL_VENDOR_ID = "2c7c"
-DEFAULT_QMI_TIMEOUT_SECONDS = 5.0
-DEFAULT_INIT_TIMEOUT_SECONDS = 30.0
-DEFAULT_INIT_RETRIES = 3
+DEFAULT_QMI_TIMEOUT_SECONDS = 2.0
+DEFAULT_SERVING_SYSTEM_TIMEOUT_SECONDS = 6.0
+DEFAULT_INIT_RETRIES = 1
+CACHE_TTL_SECONDS = 30.0
+PERSISTENT_CACHE_VERSION = 3
+PERSISTENT_CACHE_PATH = Path(os.environ.get("LINKHIVE_MODEM_CACHE_PATH", "/var/lib/linkhive/modem-cache.json"))
+
+_modem_cache: Optional[tuple[float, list[tuple[dict[str, str], Optional[str]]]]] = None
 
 QMI_SERVICE_CTL = 0x00
 QMI_SERVICE_WDS = 0x01
@@ -72,6 +79,44 @@ NAS_RADIO_LABELS = {
     0x0C: "nr5g",
 }
 
+PLMN_OPERATOR_NAMES = {
+    "23402": "O2 UK",
+    "23410": "O2 UK",
+    "23411": "O2 UK",
+    "46000": "中国移动",
+    "46002": "中国移动",
+    "46004": "中国移动",
+    "46007": "中国移动",
+    "46008": "中国移动",
+    "46001": "中国联通",
+    "46006": "中国联通",
+    "46009": "中国联通",
+    "46003": "中国电信",
+    "46005": "中国电信",
+    "46011": "中国电信",
+    "46015": "中国广电",
+}
+
+PROVIDER_INFO_PATHS = (
+    Path("/usr/share/mobile-broadband-provider-info/serviceproviders.xml"),
+    Path("/usr/local/share/mobile-broadband-provider-info/serviceproviders.xml"),
+)
+
+KNOWN_EUICC_MODEL_MARKERS = ("qdc507",)
+EID_AT_COMMANDS = (
+    "AT+EID",
+    'AT+QESIM="eid"',
+    "AT+QEUICC?",
+    "AT+QEUICCID?",
+    "AT+QESIMINFO?",
+)
+SPN_AT_COMMANDS = (
+    "AT+QSPN",
+    "AT+CRSM=176,28486,0,0,17",
+)
+
+_provider_operator_cache: Optional[dict[str, str]] = None
+
 
 @dataclass
 class DirectModemSnapshot:
@@ -85,8 +130,11 @@ class DirectModemSnapshot:
     iccid: str = ""
     imsi: str = ""
     eid: str = ""
+    euicc: str = ""
     operator_name: str = ""
     operator_code: str = ""
+    home_operator_name: str = ""
+    home_operator_code: str = ""
     registration: str = ""
     signal_dbm: str = "--"
     access_tech: str = ""
@@ -107,15 +155,18 @@ class DirectModemSnapshot:
             "modem.generic.model": self.model,
             "modem.generic.equipment-identifier": self.imei,
             "modem.generic.state": "registered" if self.registration in {"home", "roaming"} else "detected",
-            "modem.generic.signal-quality.value": "",
+            "modem.generic.signal-quality.value": _signal_quality_from_dbm(self.signal_dbm),
             "modem.generic.access-technologies.value[1]": self.access_tech,
             "modem.generic.current-modes": self.current_modes,
             "modem.3gpp.registration-state": self.registration,
             "modem.3gpp.operator-name": self.operator_name,
             "modem.3gpp.operator-code": self.operator_code,
+            "direct.home-operator-name": self.home_operator_name,
+            "direct.home-operator-code": self.home_operator_code,
             "direct.sim.iccid": self.iccid,
             "direct.sim.imsi": self.imsi,
             "direct.sim.eid": self.eid,
+            "linkhive.euicc": self.euicc or ("supported" if self.eid else ""),
             "direct.signal.dbm": self.signal_dbm,
         }
 
@@ -155,6 +206,129 @@ def find_at_ports() -> list[str]:
     return ports
 
 
+def _sysfs_device_path_for_devnode(path: str) -> Path:
+    name = Path(path).name
+    candidates: list[Path] = []
+    if name.startswith("cdc-wdm"):
+        candidates.append(Path("/sys/class/usbmisc") / name / "device")
+    elif name.startswith("ttyUSB"):
+        candidates.append(Path("/sys/class/tty") / name / "device")
+    elif name.startswith("wwan") and "qmi" in name:
+        candidates.append(Path("/sys/class/wwan") / name / "device")
+        candidates.extend(Path("/sys/class/wwan").glob(f"*/{name}/device"))
+    for candidate in candidates:
+        try:
+            return candidate.resolve(strict=True)
+        except OSError:
+            continue
+    return Path()
+
+
+def _usb_interface_number_for_devnode(path: str) -> Optional[int]:
+    device_path = _sysfs_device_path_for_devnode(path)
+    if not device_path:
+        return None
+    for parent in (device_path, *device_path.parents):
+        match = re.search(r":\d+\.(\d+)$", parent.name)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _quectel_usb_parent_for_devnode(path: str) -> str:
+    device_path = _sysfs_device_path_for_devnode(path)
+    if not device_path:
+        return ""
+    for parent in (device_path, *device_path.parents):
+        vendor = _read_text(parent / "idVendor").lower()
+        if vendor == QUECTEL_VENDOR_ID:
+            try:
+                return str(parent.resolve(strict=True))
+            except OSError:
+                return str(parent)
+    return ""
+
+
+def _add_grouped_devnode(
+    groups: dict[str, dict[str, list[str]]],
+    order: list[str],
+    kind: str,
+    path: str,
+) -> None:
+    parent = _quectel_usb_parent_for_devnode(path)
+    key = parent or f"{kind}:{path}"
+    if key not in groups:
+        groups[key] = {"qmi": [], "at": []}
+        order.append(key)
+    if path not in groups[key][kind]:
+        groups[key][kind].append(path)
+
+
+def modem_topology_signature() -> dict[str, Any]:
+    items: list[dict[str, str]] = []
+    for kind, paths in (("qmi", find_qmi_devices()), ("at", find_at_ports())):
+        for path in paths:
+            parent_path = _quectel_usb_parent_for_devnode(path)
+            parent = Path(parent_path) if parent_path else Path()
+            interface_number = _usb_interface_number_for_devnode(path)
+            items.append(
+                {
+                    "kind": kind,
+                    "path": path,
+                    "parent": parent_path,
+                    "interface": "" if interface_number is None else str(interface_number),
+                    "idVendor": _read_text(parent / "idVendor").lower() if parent_path else "",
+                    "idProduct": _read_text(parent / "idProduct").lower() if parent_path else "",
+                    "manufacturer": _read_text(parent / "manufacturer") if parent_path else "",
+                    "product": _read_text(parent / "product") if parent_path else "",
+                    "serial": _read_text(parent / "serial") if parent_path else "",
+                }
+            )
+    items.sort(key=lambda item: (item["parent"], item["kind"], item["path"]))
+    return {"version": PERSISTENT_CACHE_VERSION, "items": items}
+
+
+def load_persistent_modem_cache(signature: dict[str, Any]) -> Optional[list[tuple[dict[str, str], Optional[str]]]]:
+    try:
+        payload = json.loads(PERSISTENT_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if payload.get("version") != PERSISTENT_CACHE_VERSION or payload.get("signature") != signature:
+        return None
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return None
+    result: list[tuple[dict[str, str], Optional[str]]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            return None
+        status = item.get("status")
+        error = item.get("error")
+        if not isinstance(status, dict):
+            return None
+        normalized_status = {str(key): str(value) for key, value in status.items()}
+        result.append((normalized_status, str(error) if error else None))
+    return result
+
+
+def save_persistent_modem_cache(signature: dict[str, Any], result: list[tuple[dict[str, str], Optional[str]]]) -> None:
+    if not result or any(error or not status for status, error in result):
+        return
+    payload = {
+        "version": PERSISTENT_CACHE_VERSION,
+        "signature": signature,
+        "updated_at": time.time(),
+        "items": [{"status": status, "error": error} for status, error in result],
+    }
+    try:
+        PERSISTENT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = PERSISTENT_CACHE_PATH.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(PERSISTENT_CACHE_PATH)
+    except Exception:
+        return
+
+
 def detect_busy_device(path: str) -> Optional[str]:
     fd: Optional[int] = None
     try:
@@ -178,6 +352,83 @@ def detect_busy_device(path: str) -> Optional[str]:
             os.close(fd)
 
 
+def known_euicc_hardware(manufacturer: str = "", model: str = "") -> bool:
+    normalized = f"{manufacturer} {model}".strip().lower()
+    return any(marker in normalized for marker in KNOWN_EUICC_MODEL_MARKERS)
+
+
+def extract_eid_from_at_response(raw_response: str) -> str:
+    text = str(raw_response or "").replace(" ", "")
+    if not text:
+        return ""
+    for match in re.finditer(r"\b\d{32}\b", text):
+        eid = match.group(0)
+        if eid.startswith("89"):
+            return eid
+    for match in re.finditer(r"5A10([0-9A-Fa-f]{32})(?:9000)?", text):
+        eid_hex = match.group(1).upper()
+        if re.fullmatch(r"\d{32}", eid_hex):
+            return eid_hex
+    match = re.search(r"\b\d{32}\b", text)
+    return match.group(0) if match else ""
+
+
+def read_eid_via_at(port: str, timeout_seconds: float = 1.8) -> tuple[str, dict[str, str]]:
+    responses: dict[str, str] = {}
+    for command in EID_AT_COMMANDS:
+        try:
+            raw_response = at_command(port, command, timeout_seconds)
+        except Exception as exc:
+            raw_response = f"ERROR: {exc}"
+        responses[command] = raw_response
+        eid = extract_eid_from_at_response(raw_response)
+        if eid:
+            return eid, responses
+    return "", responses
+
+
+def read_spn_via_at(port: str, timeout_seconds: float = 1.8) -> tuple[str, dict[str, str]]:
+    responses: dict[str, str] = {}
+    for command in SPN_AT_COMMANDS:
+        try:
+            raw_response = at_command(port, command, timeout_seconds)
+        except Exception as exc:
+            raw_response = f"ERROR: {exc}"
+        responses[command] = raw_response
+        spn = parse_spn_response(raw_response)
+        if spn:
+            return spn, responses
+    return "", responses
+
+
+def parse_spn_response(raw_response: str) -> str:
+    text = str(raw_response or "")
+    qspn_match = re.search(r"\+QSPN:\s*(.+)", text, re.IGNORECASE)
+    if qspn_match:
+        values = re.findall(r'"([^"]*)"', qspn_match.group(1))
+        if len(values) >= 3:
+            return normalize_spn(values[2])
+        if values:
+            return normalize_spn(values[-1])
+
+    crsm_match = re.search(r"\+CRSM:\s*\d+\s*,\s*\d+\s*,\s*\"([0-9A-Fa-f]+)\"", text)
+    if crsm_match:
+        try:
+            data = bytes.fromhex(crsm_match.group(1))
+        except ValueError:
+            data = b""
+        if len(data) > 1:
+            return normalize_spn(data[1:].rstrip(b"\xff\x00").decode("utf-8", "ignore"))
+    return ""
+
+
+def normalize_spn(value: str) -> str:
+    normalized = re.sub(r"[\x00-\x1f\x7f\ufffd]+", "", str(value or "").replace("\xff", "")).strip()
+    if not normalized or normalized in {"--", "unknown"}:
+        return ""
+    return normalized
+
+
 class DirectModem:
     def __init__(self, qmi_path: str = "", at_port: str = "") -> None:
         self.qmi_path = qmi_path
@@ -186,10 +437,42 @@ class DirectModem:
 
     @classmethod
     def autodetect(cls) -> "DirectModem":
-        qmi_path = find_qmi_devices()[0] if find_qmi_devices() else ""
+        modems = cls.discover()
+        if modems:
+            return modems[0]
+        return cls()
+
+    @classmethod
+    def discover(cls) -> list["DirectModem"]:
+        qmi_devices = find_qmi_devices()
         at_ports = find_at_ports()
-        preferred_at = next((port for port in at_ports if port.endswith("USB2")), at_ports[0] if at_ports else "")
-        return cls(qmi_path=qmi_path, at_port=preferred_at)
+        groups: dict[str, dict[str, list[str]]] = {}
+        order: list[str] = []
+        for qmi_path in qmi_devices:
+            _add_grouped_devnode(groups, order, "qmi", qmi_path)
+        for at_port in at_ports:
+            _add_grouped_devnode(groups, order, "at", at_port)
+
+        if not groups:
+            return []
+
+        used_at_ports: set[str] = set()
+        modems: list[DirectModem] = []
+        for key in order:
+            bucket = groups[key]
+            qmi_path = sorted(bucket["qmi"])[0] if bucket["qmi"] else ""
+            at_candidates = sorted(bucket["at"], key=_at_port_priority)
+            at_port = at_candidates[0] if at_candidates else ""
+            if not qmi_path and at_port in used_at_ports:
+                continue
+            if not at_port and qmi_path:
+                remaining_at_ports = [port for port in at_ports if port not in used_at_ports]
+                at_port = remaining_at_ports[0] if remaining_at_ports else ""
+            if at_port:
+                used_at_ports.add(at_port)
+            if qmi_path or at_port:
+                modems.append(cls(qmi_path=qmi_path, at_port=at_port))
+        return modems
 
     def initialize(self) -> DirectModemSnapshot:
         qmi_error = ""
@@ -210,7 +493,7 @@ class DirectModem:
         return snapshot
 
     def _initialize_qmi(self, attempt: int) -> DirectModemSnapshot:
-        deadline = time.monotonic() + DEFAULT_INIT_TIMEOUT_SECONDS
+        deadline = time.monotonic() + DEFAULT_SERVING_SYSTEM_TIMEOUT_SECONDS
         with QmiClient(self.qmi_path, timeout_seconds=DEFAULT_QMI_TIMEOUT_SECONDS) as qmi:
             qmi.allocate_clients([QMI_SERVICE_DMS, QMI_SERVICE_UIM, QMI_SERVICE_NAS, QMI_SERVICE_WDS, QMI_SERVICE_WMS])
             qmi.dms_set_operating_mode_online()
@@ -231,12 +514,10 @@ class DirectModem:
                 access_tech = str(serving.get("access_tech") or access_tech)
                 operator_name = str(serving.get("operator_name") or operator_name)
                 operator_code = str(serving.get("operator_code") or operator_code)
-                if registration in {NAS_REGISTRATION_HOME, NAS_REGISTRATION_ROAMING}:
-                    break
-                time.sleep(1.0)
+                break
             else:
                 detail = f"：{last_registration_error}" if last_registration_error else ""
-                raise TimeoutError(f"QMI 初始化超时，第 {attempt} 次尝试未等到网络注册{detail}")
+                raise TimeoutError(f"QMI 初始化超时，第 {attempt} 次尝试未读到网络状态{detail}")
 
             manufacturer = _qmi_optional(lambda: qmi.dms_get_string(QMI_DMS_GET_MANUFACTURER), "Quectel") or "Quectel"
             model = _qmi_optional(lambda: qmi.dms_get_string(QMI_DMS_GET_MODEL), "")
@@ -245,12 +526,30 @@ class DirectModem:
             imsi = _qmi_optional(lambda: qmi.dms_uim_get_string(QMI_DMS_UIM_GET_IMSI), "")
             card_status = _qmi_optional(qmi.uim_get_card_status, {})
             eid = str(card_status.get("eid") or "")
+            euicc_supported = known_euicc_hardware(manufacturer, model)
+            eid_probe: dict[str, str] = {}
+            if not eid and euicc_supported and self.at_port:
+                eid, eid_probe = read_eid_via_at(self.at_port)
             home_network = _qmi_optional(qmi.nas_get_home_network, {})
             signal_dbm = _qmi_optional(qmi.nas_get_signal_dbm, "--")
-            if not operator_name:
-                operator_name = str(home_network.get("operator_name") or "")
+            home_operator_code = _home_operator_code(imsi, str(home_network.get("operator_code") or ""))
+            home_operator_name = first_non_empty(
+                str(home_network.get("operator_name") or ""),
+                operator_name_for_code(home_operator_code),
+            )
+            spn = ""
+            spn_probe: dict[str, str] = {}
+            if self.at_port:
+                spn, spn_probe = read_spn_via_at(self.at_port)
+            if spn:
+                home_operator_name = spn
             if not operator_code:
                 operator_code = str(home_network.get("operator_code") or (imsi[:5] if imsi else ""))
+            if not operator_name:
+                operator_name = first_non_empty(
+                    str(home_network.get("operator_name") or ""),
+                    operator_name_for_code(operator_code),
+                )
             if not access_tech:
                 access_tech = _qmi_optional(qmi.nas_guess_access_tech, "")
             unique_id = f"imei-{imei}" if imei else f"qmi-{Path(self.qmi_path).name}"
@@ -266,13 +565,22 @@ class DirectModem:
                 iccid=iccid,
                 imsi=imsi,
                 eid=eid,
+                euicc="supported" if eid or euicc_supported else "",
                 operator_name=operator_name,
                 operator_code=operator_code,
+                home_operator_name=home_operator_name,
+                home_operator_code=home_operator_code,
                 registration=registration,
                 signal_dbm=signal_dbm,
                 access_tech=access_tech,
                 current_modes="QMI",
-                probe={"qmi_path": self.qmi_path, "at_port": self.at_port, "card_status": card_status},
+                probe={
+                    "qmi_path": self.qmi_path,
+                    "at_port": self.at_port,
+                    "card_status": card_status,
+                    "eid_probe": eid_probe,
+                    "spn_probe": spn_probe,
+                },
             )
 
     def _initialize_at(self) -> DirectModemSnapshot:
@@ -287,17 +595,38 @@ class DirectModem:
         iccid = _parse_iccid(qccid)
         imsi = _extract_first_number(at_command(self.at_port, "AT+CIMI", 1.5), 5, 16)
         creg = at_command(self.at_port, "AT+CREG?", 1.5)
+
+        # 获取当前运营商名字
         cops = at_command(self.at_port, "AT+COPS?", 1.5)
+        # 切到数字格式获取运营商码
+        at_command(self.at_port, "AT+COPS=3,2", 1.2)
+        cops_num = at_command(self.at_port, "AT+COPS?", 1.5)
+        at_command(self.at_port, "AT+COPS=3,0", 1.2)  # 恢复长名称格式
+
         csq = at_command(self.at_port, "AT+CSQ", 1.5)
         usbnet = at_command(self.at_port, 'AT+QCFG="usbnet"', 1.5)
         qnwinfo = at_command(self.at_port, "AT+QNWINFO", 1.5)
-        responses.update({"qccid": qccid, "creg": creg, "cops": cops, "csq": csq, "usbnet": usbnet, "qnwinfo": qnwinfo})
+        responses.update({"qccid": qccid, "creg": creg, "cops": cops, "csq": csq,
+                          "usbnet": usbnet, "qnwinfo": qnwinfo, "cops_num": cops_num})
 
         registration = _parse_registration(creg)
-        operator_name, operator_code = _parse_operator(cops)
+        operator_name, _ = _parse_operator(cops)       # 当前运营商名
+        _, operator_code = _parse_operator(cops_num)   # 当前运营商数字码
+        # 归属运营商从 IMSI 推导
+        home_operator_code = imsi[:5] if len(imsi) >= 5 else ""
+        spn, spn_responses = read_spn_via_at(self.at_port)
+        responses.update({f"spn:{command}": response for command, response in spn_responses.items()})
+        home_operator_name = first_non_empty(spn, operator_name_for_code(home_operator_code))
+        operator_name = first_non_empty(operator_name, operator_name_for_code(operator_code), home_operator_name)
         access_tech = _parse_access_tech(qnwinfo)
         signal_dbm = _parse_csq_dbm(csq)
         unique_id = f"imei-{imei}" if imei else f"at-{Path(self.at_port).name}"
+        euicc_supported = known_euicc_hardware(manufacturer, model)
+        eid = ""
+        eid_responses: dict[str, str] = {}
+        if euicc_supported:
+            eid, eid_responses = read_eid_via_at(self.at_port)
+            responses.update({f"eid:{command}": response for command, response in eid_responses.items()})
 
         return DirectModemSnapshot(
             id=unique_id,
@@ -309,9 +638,12 @@ class DirectModem:
             imei=imei,
             iccid=iccid,
             imsi=imsi,
-            eid="",
+            eid=eid,
+            euicc="supported" if eid or euicc_supported else "",
             operator_name=operator_name,
-            operator_code=operator_code or (imsi[:5] if imsi else ""),
+            operator_code=operator_code or home_operator_code,
+            home_operator_name=home_operator_name,
+            home_operator_code=home_operator_code,
             registration=registration,
             signal_dbm=signal_dbm,
             access_tech=access_tech,
@@ -589,10 +921,69 @@ def _parse_nas_serving_system(serving: bytes, roaming: bytes) -> dict[str, str]:
 def _parse_plmn(value: bytes) -> dict[str, str]:
     if len(value) < 4:
         return {"operator_code": "", "operator_name": ""}
-    mcc, mnc = struct.unpack_from("<HH", value, 0)
+    mcc, mnc_raw = struct.unpack_from("<HH", value, 0)
     name = _decode_qmi_string(value[4:])
-    operator_code = f"{mcc:03d}{mnc:02d}" if mcc else ""
-    return {"operator_code": operator_code, "operator_name": name}
+    mnc_str = _format_mnc(mnc_raw)
+    operator_code = f"{mcc:03d}{mnc_str}" if mcc else ""
+    return {"operator_code": operator_code, "operator_name": first_non_empty(name, operator_name_for_code(operator_code))}
+
+
+def _format_mnc(mnc_raw: int) -> str:
+    if mnc_raw & 0xFF00 == 0xFF00:
+        return f"{mnc_raw & 0xFF:03d}"
+    if 0 <= mnc_raw <= 99:
+        return f"{mnc_raw:02d}"
+    if 100 <= mnc_raw <= 999:
+        return f"{mnc_raw:03d}"
+    return f"{mnc_raw}"
+
+
+def _home_operator_code(imsi: str, fallback: str = "") -> str:
+    if len(imsi) >= 5:
+        return imsi[:5]
+    return fallback
+
+
+def operator_name_for_code(operator_code: str) -> str:
+    code = str(operator_code or "").strip()
+    if not re.fullmatch(r"\d{5,6}", code):
+        return ""
+    return PLMN_OPERATOR_NAMES.get(code, "") or provider_operator_names().get(code, "")
+
+
+def provider_operator_names() -> dict[str, str]:
+    global _provider_operator_cache
+    if _provider_operator_cache is not None:
+        return _provider_operator_cache
+    names: dict[str, str] = {}
+    for path in PROVIDER_INFO_PATHS:
+        if not path.exists():
+            continue
+        try:
+            root = ET.parse(path).getroot()
+        except Exception:
+            continue
+        for provider in root.findall(".//provider"):
+            name = first_non_empty(provider.findtext("name"))
+            if not name:
+                continue
+            for network_id in provider.findall(".//network-id"):
+                mcc = str(network_id.get("mcc") or "").strip()
+                mnc = str(network_id.get("mnc") or "").strip()
+                if re.fullmatch(r"\d{3}", mcc) and re.fullmatch(r"\d{2,3}", mnc):
+                    names.setdefault(f"{mcc}{mnc.zfill(2)}", name)
+        if names:
+            break
+    _provider_operator_cache = names
+    return names
+
+
+def first_non_empty(*values: str) -> str:
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized:
+            return normalized
+    return ""
 
 
 def _radio_access_tech(radios: list[int]) -> str:
@@ -627,40 +1018,171 @@ def _qmi_optional(callback: Any, default: Any) -> Any:
         return default
 
 
-def enumerate_direct_modems() -> list[tuple[dict[str, str], Optional[str]]]:
-    if not scan_quectel_usb_devices() and not find_qmi_devices() and not find_at_ports():
+def enumerate_direct_modems(force_refresh: bool = False) -> list[tuple[dict[str, str], Optional[str]]]:
+    global _modem_cache
+    now = time.monotonic()
+    if not force_refresh and _modem_cache is not None:
+        cached_time, cached_result = _modem_cache
+        if now - cached_time < CACHE_TTL_SECONDS and cached_result:
+            return cached_result
+
+    signature = modem_topology_signature()
+    if not signature["items"]:
+        _modem_cache = (now, [])
         return []
-    modem = DirectModem.autodetect()
-    try:
-        snapshot = modem.initialize()
-        return [(snapshot.to_status_dict(), None)]
-    except Exception as exc:
-        return [({}, str(exc))]
+    if not force_refresh:
+        persistent_result = load_persistent_modem_cache(signature)
+        if persistent_result:
+            _modem_cache = (now, persistent_result)
+            return persistent_result
+
+    result = []
+    for modem in DirectModem.discover():
+        try:
+            snapshot = modem.initialize()
+            result.append((snapshot.to_status_dict(), None))
+        except Exception as exc:
+            result.append(({}, str(exc)))
+    _modem_cache = (now, result)
+    save_persistent_modem_cache(signature, result)
+    return result
 
 
-def get_direct_modem_info() -> tuple[dict[str, str], Optional[str]]:
-    items = enumerate_direct_modems()
+def get_direct_modem_info(device_id: str = "", force_refresh: bool = False) -> tuple[dict[str, str], Optional[str]]:
+    items = enumerate_direct_modems(force_refresh=force_refresh)
+    target = str(device_id or "").strip()
+    if target:
+        for modem, error in items:
+            if _status_matches_device_id(modem, target):
+                return modem, error
+        return {}, f"未找到目标设备：{target}"
+    for modem, error in items:
+        if modem and not error:
+            return modem, error
     return items[0] if items else ({}, "未检测到 Quectel 蜂窝模组")
 
 
 def list_sms_via_at(device_id: str = "") -> tuple[list[dict[str, str]], Optional[str]]:
-    modem = DirectModem.autodetect()
-    if not modem.at_port:
+    status, error = get_direct_modem_info(device_id)
+    at_port = status.get("linkhive.at_port", "")
+    if error and not at_port:
+        return [], error
+    if not at_port:
         return [], "未找到 AT 端口，无法读取短信"
     try:
-        at_command(modem.at_port, "AT+CMGF=1", 1.2)
-        raw = at_command(modem.at_port, 'AT+CMGL="ALL"', 4.0)
-        return _parse_cmgl(raw, device_id), None
+        at_command(at_port, "AT+CMGF=1", 1.2)
+        messages = _list_sms_from_all_storages(at_port, device_id)
+        return messages, None
     except Exception as exc:
         return [], str(exc)
 
 
-def send_sms_via_at(number: str, text: str) -> None:
-    modem = DirectModem.autodetect()
-    if not modem.at_port:
+def send_sms_via_at(number: str, text: str, device_id: str = "") -> None:
+    status, error = get_direct_modem_info(device_id)
+    at_port = status.get("linkhive.at_port", "")
+    if error and not at_port:
+        raise RuntimeError(error)
+    if not at_port:
         raise RuntimeError("未找到 AT 端口，无法发送短信")
-    at_command(modem.at_port, "AT+CMGF=1", 1.2)
-    _at_sms_submit(modem.at_port, number, text, 20.0)
+    at_command(at_port, "AT+CMGF=1", 1.2)
+    _at_sms_submit(at_port, number, text, 20.0)
+
+
+def _status_matches_device_id(status: dict[str, str], target: str) -> bool:
+    target_aliases = _device_id_aliases(target)
+    candidates = set().union(*(
+        _device_id_aliases(candidate)
+        for candidate in (
+            status.get("linkhive.modem_selector", ""),
+            status.get("linkhive.modem_path", ""),
+            status.get("linkhive.at_port", ""),
+            status.get("linkhive.qmi_path", ""),
+            status.get("modem.generic.equipment-identifier", ""),
+        )
+    ))
+    imei = status.get("modem.generic.equipment-identifier", "")
+    if imei:
+        candidates.update(_device_id_aliases(f"imei-{imei}"))
+    return bool(target_aliases & candidates)
+
+
+def _device_id_aliases(raw_value: str) -> set[str]:
+    value = str(raw_value or "").strip()
+    if not value:
+        return set()
+    aliases = {value}
+    basename = Path(value).name
+    if basename:
+        aliases.add(basename)
+    for _ in range(3):
+        for item in list(aliases):
+            if item.startswith("imei-"):
+                aliases.add(item.removeprefix("imei-"))
+            if item.startswith("modem-"):
+                aliases.add(item.removeprefix("modem-"))
+            if item.startswith("at-"):
+                aliases.add(item.removeprefix("at-"))
+            if item.startswith("qmi-"):
+                aliases.add(item.removeprefix("qmi-"))
+    for item in list(aliases):
+        if item.startswith("ttyUSB"):
+            aliases.add(f"at-{item}")
+            aliases.add(f"modem-at-{item}")
+            aliases.add(f"/dev/{item}")
+        if item.startswith("cdc-wdm"):
+            aliases.add(f"qmi-{item}")
+            aliases.add(f"modem-qmi-{item}")
+            aliases.add(f"/dev/{item}")
+    return aliases
+
+
+def _list_sms_from_all_storages(at_port: str, device_id: str) -> list[dict[str, str]]:
+    original_memories: list[str] = []
+    try:
+        original_memories = _parse_cpms_memories(at_command(at_port, "AT+CPMS?", 1.5))
+    except Exception:
+        original_memories = []
+
+    merged: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for memory in ("ME", "SM"):
+        try:
+            response = at_command(at_port, _cpms_set_command([memory, memory, memory]), 1.5)
+            if "ERROR" in response or "+CMS ERROR" in response:
+                continue
+            raw = at_command(at_port, 'AT+CMGL="ALL"', 4.0)
+        except Exception:
+            continue
+        for message in _parse_cmgl(raw, device_id):
+            key = (
+                message.get("number", ""),
+                message.get("timestamp", ""),
+                message.get("state", ""),
+                message.get("text", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({**message, "storage": memory})
+
+    if original_memories:
+        try:
+            restore_memories = (original_memories + ["MT", "MT", "MT"])[:3]
+            at_command(at_port, _cpms_set_command(restore_memories), 1.0)
+        except Exception:
+            pass
+
+    merged.sort(key=lambda item: int(item.get("id") or "0"), reverse=True)
+    return merged
+
+
+def _cpms_set_command(memories: list[str]) -> str:
+    quoted = ",".join(f'"{memory}"' for memory in memories)
+    return f"AT+CPMS={quoted}"
+
+
+def _parse_cpms_memories(raw_response: str) -> list[str]:
+    return re.findall(r'"([^"]+)"\s*,\s*\d+\s*,\s*\d+', raw_response)[:3]
 
 
 def at_command(port: str, command: str, timeout_seconds: float = 1.5) -> str:
@@ -672,6 +1194,7 @@ def at_command(port: str, command: str, timeout_seconds: float = 1.5) -> str:
         attrs[2] = attrs[2] | termios.CLOCAL | termios.CREAD
         attrs[3] = 0
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIOFLUSH)
         os.write(fd, (command + "\r").encode("ascii", "ignore"))
         deadline = time.monotonic() + timeout_seconds
         chunks: list[bytes] = []
@@ -703,6 +1226,7 @@ def _at_sms_submit(port: str, number: str, text: str, timeout_seconds: float) ->
         attrs[2] = attrs[2] | termios.CLOCAL | termios.CREAD
         attrs[3] = 0
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIOFLUSH)
         os.write(fd, f'AT+CMGS="{number}"\r'.encode("ascii", "ignore"))
         deadline = time.monotonic() + timeout_seconds
         chunks: list[bytes] = []
@@ -733,6 +1257,11 @@ def _read_text(path: Path) -> str:
 
 
 def _at_port_priority(path: str) -> tuple[int, str]:
+    interface_number = _usb_interface_number_for_devnode(path)
+    if interface_number == 2:
+        return (0, path)
+    if interface_number == 3:
+        return (1, path)
     name = Path(path).name
     if name.endswith("USB2"):
         return (0, path)
@@ -800,6 +1329,15 @@ def _parse_csq_dbm(raw: str) -> str:
     if rssi == 99:
         return "--"
     return f"{-113 + 2 * rssi} dBm"
+
+
+def _signal_quality_from_dbm(raw: str) -> str:
+    match = re.search(r"(-?\d+(?:\.\d+)?)", str(raw or ""))
+    if not match:
+        return ""
+    dbm = float(match.group(1))
+    quality = round((dbm + 113.0) * 100.0 / 62.0)
+    return str(max(0, min(100, quality)))
 
 
 def _single_line(raw: str) -> str:

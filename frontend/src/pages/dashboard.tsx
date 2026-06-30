@@ -71,8 +71,6 @@ export default function DashboardPage() {
   const smsReadableCount = status?.sms_storage?.readable_count ?? status?.sms.length ?? 0
   const deviceOverviewRows: OverviewRow[] = [
     { label: "设备型号", value: displayValue(compactDeviceName(device?.manufacturer, device?.model)) },
-    { label: "厂商", value: displayValue(device?.manufacturer) },
-    { label: "型号", value: displayValue(device?.model) },
     { label: "IMEI", value: displayValue(device?.imei), mono: true },
     { label: "基带状态", value: formatModemState(status?.modem.state || "--") },
     { label: "设备号码", value: displayValue(status?.modem.number), mono: true },
@@ -80,17 +78,11 @@ export default function DashboardPage() {
   const simOverviewRows: OverviewRow[] = [
     { label: esimEnabled ? "当前 Profile" : "当前 SIM", value: simLabel },
     { label: "ICCID", value: displayValue(device?.iccid), mono: true },
-    { label: "归属运营商", value: homeOperatorName },
-    { label: "归属运营商代码", value: homeOperatorCode, mono: true },
     { label: "SIM 类型", value: formatSimType(status?.capabilities.sim_type, esimEnabled) },
     { label: "eSIM 管理", value: formatEnabledState(status?.capabilities.esim_management_enabled) },
   ]
   const networkOverviewRows: OverviewRow[] = [
-    { label: "当前运营商", value: operatorName },
-
-    { label: "信号强度", value: signalDisplayValue },
     { label: "注册状态", value: formatRegistrationState(status?.modem.registration || "--") },
-    { label: "漫游状态", value: device?.roaming ? "漫游" : "未漫游" },
     { label: "VoLTE", value: status?.modem.volte_supported === false ? "不支持" : status?.modem.volte_enabled ? "已启用" : "未启用", muted: status?.modem.volte_supported === false },
     { label: "VoWiFi", value: status?.modem.vowifi_supported === false ? "不支持" : status?.modem.vowifi_enabled ? "已启用" : "未启用", muted: status?.modem.vowifi_supported === false },
   ]

@@ -306,8 +306,6 @@ function OverviewTab({ device }: { device: DeviceStatus }) {
       title: "设备",
       icon: CpuIcon,
       items: [
-        ["厂商", device.manufacturer],
-        ["型号", device.model],
         ["IMEI", device.imei],
         ["设备号码", device.number],
       ],
@@ -329,12 +327,8 @@ function OverviewTab({ device }: { device: DeviceStatus }) {
       title: "网络",
       icon: RadioTowerIcon,
       items: [
-        ["当前运营商", formatOperatorName(device.operator_name, device.operator_code)],
         ["运营商代码", device.operator_code],
-        ["网络制式", formatAccessTech(device.access_tech)],
-        ["信号强度", device.signal_dbm || "--"],
-        ["注册状态", formatRegistrationState(device.registration)],
-        ["漫游状态", device.roaming ? "漫游" : "未漫游"],
+        ["频段", device.band],
       ],
     },
   ]
