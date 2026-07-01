@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 
 import { Logo } from "@/components/shared/logo"
+import { LogDialog } from "@/components/layout/log-dialog"
 import { useAppContext } from "@/hooks/app-context"
 import { serviceStateLabel, serviceStateTone } from "@/lib/helpers"
 import { cn } from "@/lib/utils"
@@ -99,6 +100,8 @@ export function TopNav({ onOpenMenu }: { onOpenMenu: () => void }) {
               </div>
             </div>
           </div>
+
+          <LogDialog />
 
           <button
             type="button"

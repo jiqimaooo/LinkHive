@@ -13,11 +13,9 @@ import {
   MinusIcon,
   PlusIcon,
   RefreshCwIcon,
-  RotateCcwIcon,
   ShieldCheckIcon,
   ShieldIcon,
   SmartphoneIcon,
-  Trash2Icon,
   UserRoundIcon,
   type LucideIcon,
 } from "lucide-react"
@@ -44,10 +42,44 @@ type BanStatus = {
   enabled: boolean
   max_attempts: number
   lan_enabled: boolean
+  ban_duration_seconds: number
   banned_ips: string[]
+  banned?: Array<{ ip: string; banned_at: number; expires_at: number }>
 }
 
 type LoginDialog = "devices" | "session" | "time" | "ip" | "failures" | null
+
+type SecuritySession = {
+  session_id: string
+  username: string
+  ip: string
+  user_agent: string
+  device: string
+  login_at: string
+  expires_at: number
+  current?: boolean
+}
+
+type LoginFailure = {
+  username: string
+  ip: string
+  user_agent: string
+  device: string
+  time: string
+  reason: string
+}
+
+type SecurityOverview = {
+  current_session_id: string
+  sessions: SecuritySession[]
+  recent_login: Partial<SecuritySession>
+  recent_login_time: string
+  recent_login_ip: string
+  failures: LoginFailure[]
+  failure_count: number
+  ban_duration_seconds: number
+  banned: Array<{ ip: string; banned_at: number; expires_at: number }>
+}
 
 const LOGIN_ACTIONS: Array<{
   key: Exclude<LoginDialog, null>
@@ -62,35 +94,36 @@ const LOGIN_ACTIONS: Array<{
   { key: "failures", title: "登录失败记录", description: "查看失败记录", icon: ShieldCheckIcon },
 ]
 
-const LOGIN_DIALOG_COPY: Record<Exclude<LoginDialog, null>, { title: string; description: string; body: string }> = {
+const LOGIN_DIALOG_COPY: Record<Exclude<LoginDialog, null>, { title: string; description: string }> = {
   devices: {
     title: "登录设备",
     description: "查看当前账号关联的登录设备。",
-    body: "当前版本未提供设备审计接口。接入后，这里会显示设备名称、浏览器、系统与登录时间。",
   },
   session: {
     title: "当前会话",
     description: "查看当前浏览器会话状态。",
-    body: "当前会话正在使用 LinkHive 控制台。服务端会话详情接入后，这里会显示会话创建时间与来源。",
   },
   time: {
     title: "最近登录时间",
     description: "查看账号最近一次成功登录。",
-    body: "当前版本未返回最近登录时间。接入审计日志后，这里会显示成功登录时间线。",
   },
   ip: {
     title: "最近登录 IP",
     description: "查看账号最近登录来源。",
-    body: "当前版本未返回登录 IP。接入审计日志后，这里会显示来源 IP 与网络位置。",
   },
   failures: {
     title: "登录失败记录",
     description: "查看最近失败登录尝试。",
-    body: "当前版本未返回失败登录明细。防暴力破解启用后，达到阈值的 IP 会进入封禁列表。",
   },
 }
 
-const DEFAULT_BAN_SETTINGS = { enabled: true, max_attempts: "5", lan_enabled: false }
+const DEFAULT_BAN_SETTINGS = { enabled: true, max_attempts: "5", lan_enabled: false, ban_duration_seconds: "1800" }
+const BAN_DURATION_OPTIONS = [
+  { label: "15 分钟", value: "900" },
+  { label: "30 分钟", value: "1800" },
+  { label: "1 小时", value: "3600" },
+  { label: "24 小时", value: "86400" },
+]
 
 export default function SecurityPage() {
   const [oldPassword, setOldPassword] = useState("")
@@ -104,14 +137,18 @@ export default function SecurityPage() {
   const [totpLoading, setTotpLoading] = useState(false)
   const [totpDialogOpen, setTotpDialogOpen] = useState(false)
 
-  const [banStatus, setBanStatus] = useState<BanStatus>({ enabled: false, max_attempts: 5, lan_enabled: false, banned_ips: [] })
+  const [securityOverview, setSecurityOverview] = useState<SecurityOverview | null>(null)
+  const [securityLoading, setSecurityLoading] = useState(false)
+  const [banStatus, setBanStatus] = useState<BanStatus>({ enabled: false, max_attempts: 5, lan_enabled: false, ban_duration_seconds: 1800, banned_ips: [] })
   const [banEnabled, setBanEnabled] = useState(false)
   const [banMaxAttempts, setBanMaxAttempts] = useState("5")
   const [banLanEnabled, setBanLanEnabled] = useState(false)
-  const [banDuration, setBanDuration] = useState("30 分钟")
+  const [banDuration, setBanDuration] = useState("1800")
   const [banListOpen, setBanListOpen] = useState(false)
   const [unbanLoading, setUnbanLoading] = useState<string | null>(null)
   const [loginDialog, setLoginDialog] = useState<LoginDialog>(null)
+  const [logoutAllOpen, setLogoutAllOpen] = useState(false)
+  const [logoutAllLoading, setLogoutAllLoading] = useState(false)
 
   const passwordStrength = useMemo(() => getPasswordStrength(newPassword), [newPassword])
   const loginDialogCopy = loginDialog ? LOGIN_DIALOG_COPY[loginDialog] : null
@@ -132,15 +169,30 @@ export default function SecurityPage() {
       setBanEnabled(data.enabled)
       setBanMaxAttempts(String(data.max_attempts))
       setBanLanEnabled(data.lan_enabled)
+      setBanDuration(String(data.ban_duration_seconds || 1800))
     } catch {
       /* keep page usable */
+    }
+  }, [])
+
+  const loadSecurityOverview = useCallback(async () => {
+    setSecurityLoading(true)
+    try {
+      const data = await requestJson<SecurityOverview>("/api/auth/security-overview")
+      setSecurityOverview(data)
+      if (data.ban_duration_seconds) setBanDuration(String(data.ban_duration_seconds))
+    } catch {
+      /* keep page usable */
+    } finally {
+      setSecurityLoading(false)
     }
   }, [])
 
   useEffect(() => {
     void loadTotpStatus()
     void loadBanStatus()
-  }, [loadBanStatus, loadTotpStatus])
+    void loadSecurityOverview()
+  }, [loadBanStatus, loadSecurityOverview, loadTotpStatus])
 
   const handleChangePassword = async () => {
     if (!oldPassword) {
@@ -223,13 +275,14 @@ export default function SecurityPage() {
   }
 
   const saveBanSettings = async (overrides: Partial<typeof DEFAULT_BAN_SETTINGS>) => {
-    const next = { enabled: banEnabled, max_attempts: banMaxAttempts, lan_enabled: banLanEnabled, ...overrides }
+    const next = { enabled: banEnabled, max_attempts: banMaxAttempts, lan_enabled: banLanEnabled, ban_duration_seconds: banDuration, ...overrides }
     try {
       await requestJson("/api/auth/ban-settings", {
         method: "POST",
         body: JSON.stringify(next),
       })
       await loadBanStatus()
+      await loadSecurityOverview()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存防护策略失败")
     }
@@ -250,6 +303,7 @@ export default function SecurityPage() {
       })
       toast.success(`已解除封禁 ${ip}`)
       await loadBanStatus()
+      await loadSecurityOverview()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "解封失败")
     } finally {
@@ -274,6 +328,7 @@ export default function SecurityPage() {
       )
       toast.success("已解除全部封禁")
       await loadBanStatus()
+      await loadSecurityOverview()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "解除全部封禁失败")
     } finally {
@@ -281,16 +336,17 @@ export default function SecurityPage() {
     }
   }
 
-  const handleResetPolicy = async () => {
-    setBanEnabled(DEFAULT_BAN_SETTINGS.enabled)
-    setBanMaxAttempts(DEFAULT_BAN_SETTINGS.max_attempts)
-    setBanLanEnabled(DEFAULT_BAN_SETTINGS.lan_enabled)
-    await saveBanSettings(DEFAULT_BAN_SETTINGS)
-    toast.success("已恢复默认安全策略")
-  }
-
-  const showUnavailable = (label: string) => {
-    toast.info(`${label} 需要服务端会话管理接口支持`)
+  const handleLogoutAll = async () => {
+    setLogoutAllLoading(true)
+    try {
+      await requestJson("/api/auth/logout-all", { method: "POST" })
+      toast.success("已注销所有设备")
+      window.location.href = "/login"
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "注销设备失败")
+    } finally {
+      setLogoutAllLoading(false)
+    }
   }
 
   return (
@@ -417,13 +473,10 @@ export default function SecurityPage() {
             <SettingRow title="封禁时间" description="封禁后多长时间自动解封">
               <select
                 value={banDuration}
-                onChange={(event) => setBanDuration(event.target.value)}
+                onChange={(event) => { setBanDuration(event.target.value); void saveBanSettings({ ban_duration_seconds: event.target.value }) }}
                 className="h-9 rounded-[10px] border border-[#E5E7EB] bg-white px-3 text-sm font-medium text-slate-900 shadow-[0_1px_2px_rgba(0,0,0,.05)] outline-none transition-colors focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
               >
-                <option>15 分钟</option>
-                <option>30 分钟</option>
-                <option>1 小时</option>
-                <option>24 小时</option>
+                {BAN_DURATION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </SettingRow>
             <SettingRow title="查看封禁列表" description="查看当前已被封禁的 IP 列表">
@@ -443,10 +496,8 @@ export default function SecurityPage() {
               <p className="mt-1 text-[13px] leading-5 text-[#EF4444]">以下操作不可逆，请谨慎操作。</p>
             </div>
           </div>
-          <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <DangerButton icon={LogOutIcon} title="注销所有设备" description="强制所有设备退出登录" onClick={() => showUnavailable("注销所有设备")} />
-            <DangerButton icon={Trash2Icon} title="删除所有登录会话" description="删除当前所有活动会话" onClick={() => showUnavailable("删除所有登录会话")} />
-            <DangerButton icon={RotateCcwIcon} title="恢复默认安全策略" description="将所有安全策略恢复为默认值" onClick={handleResetPolicy} />
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
+            <DangerButton icon={LogOutIcon} title="注销所有设备" description="强制所有设备退出登录" onClick={() => setLogoutAllOpen(true)} disabled={logoutAllLoading} />
             <DangerButton icon={ShieldCheckIcon} title="解除全部封禁" description="立即解除所有封禁" onClick={handleClearBans} disabled={unbanLoading === "*"} />
           </div>
         </section>
@@ -458,11 +509,25 @@ export default function SecurityPage() {
             <DialogTitle>{loginDialogCopy?.title}</DialogTitle>
             <DialogDescription>{loginDialogCopy?.description}</DialogDescription>
           </DialogHeader>
-          <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm leading-6 text-[#6B7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-            {loginDialogCopy?.body}
-          </div>
+          <SecurityDialogContent dialog={loginDialog} overview={securityOverview} loading={securityLoading} />
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setLoginDialog(null)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={logoutAllOpen} onOpenChange={setLogoutAllOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认注销所有设备？</DialogTitle>
+            <DialogDescription>这会让当前账号的所有已登录浏览器立即失效，包括当前设备。操作完成后需要重新登录。</DialogDescription>
+          </DialogHeader>
+          <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-4 text-sm leading-6 text-rose-900 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-100">
+            当前记录到 {securityOverview?.sessions.length ?? 0} 个登录会话。确认后会清空会话记录并提升服务端会话版本。
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setLogoutAllOpen(false)} disabled={logoutAllLoading}>取消</Button>
+            <Button type="button" variant="destructive" onClick={handleLogoutAll} disabled={logoutAllLoading}>{logoutAllLoading ? "注销中..." : "注销所有设备"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -547,6 +612,110 @@ function SectionCard({ icon: Icon, title, children }: { icon: LucideIcon; title:
       {children}
     </section>
   )
+}
+
+function SecurityDialogContent({ dialog, overview, loading }: { dialog: LoginDialog; overview: SecurityOverview | null; loading: boolean }) {
+  if (loading) {
+    return <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm text-[#6B7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">正在读取安全记录...</div>
+  }
+  if (!overview) {
+    return <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm text-[#6B7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">暂时无法读取安全记录，请稍后刷新。</div>
+  }
+
+  if (dialog === "devices") {
+    return (
+      <div className="space-y-2">
+        {overview.sessions.length ? overview.sessions.map((session) => (
+          <SecurityRecord key={session.session_id || `${session.ip}-${session.login_at}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate font-medium text-slate-900 dark:text-slate-100">{session.device || "未知设备"}{session.current ? "（当前）" : ""}</div>
+                <div className="mt-1 text-xs text-[#6B7280] dark:text-slate-400">{session.ip || "--"} · {formatSecurityTime(session.login_at) || "登录时间未知"}</div>
+              </div>
+              <Badge variant={session.current ? "secondary" : "outline"}>{session.current ? "当前" : "在线"}</Badge>
+            </div>
+          </SecurityRecord>
+        )) : <EmptySecurityRecord text="暂无登录设备记录。" />}
+      </div>
+    )
+  }
+
+  if (dialog === "session") {
+    const current = overview.sessions.find((session) => session.current) ?? overview.sessions[0]
+    return current ? (
+      <SecurityRecord>
+        <DetailLine label="设备" value={current.device || "未知设备"} />
+        <DetailLine label="IP" value={current.ip || "--"} />
+        <DetailLine label="登录时间" value={formatSecurityTime(current.login_at) || "--"} />
+        <DetailLine label="过期时间" value={formatUnixTime(current.expires_at) || "--"} />
+      </SecurityRecord>
+    ) : <EmptySecurityRecord text="暂无当前会话记录。" />
+  }
+
+  if (dialog === "time") {
+    return (
+      <SecurityRecord>
+        <DetailLine label="最近登录时间" value={formatSecurityTime(overview.recent_login_time) || "--"} />
+        <DetailLine label="登录设备" value={overview.recent_login.device || "--"} />
+      </SecurityRecord>
+    )
+  }
+
+  if (dialog === "ip") {
+    return (
+      <SecurityRecord>
+        <DetailLine label="最近登录 IP" value={overview.recent_login_ip || "--"} />
+        <DetailLine label="来源设备" value={overview.recent_login.device || "--"} />
+      </SecurityRecord>
+    )
+  }
+
+  if (dialog === "failures") {
+    return (
+      <div className="space-y-2">
+        {overview.failures.length ? overview.failures.map((failure, index) => (
+          <SecurityRecord key={`${failure.ip}-${failure.time}-${index}`}>
+            <div className="font-medium text-slate-900 dark:text-slate-100">{failure.ip || "--"}</div>
+            <div className="mt-1 text-xs text-[#6B7280] dark:text-slate-400">{formatSecurityTime(failure.time) || "--"} · {failure.device || "未知设备"}</div>
+            <div className="mt-2 text-xs text-rose-600 dark:text-rose-300">{failure.reason || "登录失败"}</div>
+          </SecurityRecord>
+        )) : <EmptySecurityRecord text="暂无登录失败记录。" />}
+      </div>
+    )
+  }
+
+  return <EmptySecurityRecord text="暂无安全记录。" />
+}
+
+function SecurityRecord({ children }: { children: ReactNode }) {
+  return <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm dark:border-slate-800 dark:bg-slate-900">{children}</div>
+}
+
+function EmptySecurityRecord({ text }: { text: string }) {
+  return <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm text-[#6B7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">{text}</div>
+}
+
+function DetailLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-1.5">
+      <span className="text-[#6B7280] dark:text-slate-400">{label}</span>
+      <span className="min-w-0 truncate font-medium text-slate-900 dark:text-slate-100">{value}</span>
+    </div>
+  )
+}
+
+function formatSecurityTime(value?: string) {
+  if (!value) return ""
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString("zh-CN", { hour12: false })
+}
+
+function formatUnixTime(value?: number) {
+  if (!value) return ""
+  const parsed = new Date(value * 1000)
+  if (Number.isNaN(parsed.getTime())) return ""
+  return parsed.toLocaleString("zh-CN", { hour12: false })
 }
 
 function PasswordField({ id, label, value, placeholder, onChange }: { id: string; label: string; value: string; placeholder: string; onChange: (value: string) => void }) {

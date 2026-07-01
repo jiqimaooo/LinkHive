@@ -321,12 +321,12 @@ export default function SmsForwardingPage() {
   }
 
   return (
-    <div className="-m-4 min-h-[calc(100vh-4rem)] bg-[#F8FAFC] p-6 md:-m-6 md:p-8">
-      <div className="mx-auto w-full max-w-[1600px] space-y-6">
+    <div className="-mx-4 -my-4 min-h-[calc(100dvh-4rem)] bg-[#F8FAFC] px-4 pb-12 pt-8 sm:-mx-6 sm:px-8 lg:mx-[-2rem] lg:my-[-1.25rem] lg:px-8 dark:bg-slate-950">
+      <div className="mx-auto flex w-full max-w-[1160px] flex-col gap-6">
         <header className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-950">通知转发</h1>
-            <p className="mt-2 text-sm text-slate-500">配置短信通知渠道，每种渠道仅保留一份配置。</p>
+            <h1 className="text-[28px] font-bold leading-9 text-slate-950 dark:text-slate-50">通知转发</h1>
+            <p className="mt-1 text-[13px] leading-5 text-[#6B7280] dark:text-slate-400">配置短信通知渠道，每种渠道仅保留一份配置。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" disabled={actionBusy || !availableTypes.length} className="h-10 rounded-[10px] bg-[#2563EB] px-4 shadow-[0_8px_20px_rgba(37,99,235,0.22)] hover:bg-blue-600" onClick={() => setAddModalOpen(true)}>

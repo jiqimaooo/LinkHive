@@ -6,6 +6,7 @@ import {
   SearchIcon,
   SendIcon,
   SmartphoneIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react"
 import { EmptyState } from "@/components/shared/empty-state"
@@ -45,6 +46,10 @@ type ChatMessage = {
   text: string
   timestamp: string
   state_label: string
+  storage?: string
+  raw_id?: string
+  raw_state?: string
+  canDelete?: boolean
 }
 
 type Conversation = {
@@ -69,6 +74,8 @@ export default function SmsInboxPage() {
   const [newForm, setNewForm] = useState({ device_id: "", number: "", message: "" })
   const [localMessages, setLocalMessages] = useState<LocalOutgoingMessage[]>([])
   const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([])
+  const [deleteTarget, setDeleteTarget] = useState<ChatMessage | null>(null)
+  const [hiddenSmsKeys, setHiddenSmsKeys] = useState<string[]>([])
 
   const devices = useMemo(() => status?.devices ?? [], [status?.devices])
   const smsList = useMemo(() => status?.sms ?? [], [status?.sms])
@@ -106,9 +113,12 @@ export default function SmsInboxPage() {
     }
 
     for (const sms of smsList) {
+      if (!isReceivedSms(sms)) continue
+      const id = smsKey(sms)
+      if (hiddenSmsKeys.includes(id)) continue
       const deviceId = sms.device_id || defaultDeviceId
       appendMessage({
-        id: smsKey(sms),
+        id,
         key: conversationKey(deviceId, sms.number),
         direction: "inbound",
         device_id: deviceId,
@@ -116,6 +126,10 @@ export default function SmsInboxPage() {
         text: sms.text || "空短信",
         timestamp: sms.timestamp,
         state_label: sms.state_label,
+        storage: sms.storage,
+        raw_id: sms.raw_id || sms.id,
+        raw_state: sms.raw_state,
+        canDelete: Boolean(sms.storage && (sms.raw_id || sms.id)),
       })
     }
 
@@ -146,7 +160,7 @@ export default function SmsInboxPage() {
     }
 
     return Array.from(map.values()).sort((a, b) => messageTime(b.lastTime) - messageTime(a.lastTime))
-  }, [defaultDeviceId, devices, draftConversations, localMessages, smsList])
+  }, [defaultDeviceId, devices, draftConversations, hiddenSmsKeys, localMessages, smsList])
 
   const filteredConversations = useMemo(() => {
     const keyword = searchText.trim().toLowerCase()
@@ -195,29 +209,46 @@ export default function SmsInboxPage() {
     if (closeDialog) setNewOpen(false)
   }
 
-  return (
-    <div className="flex min-h-[calc(100dvh-7rem)] flex-col gap-4">
-      <section className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">短信</h1>
-          <p className="mt-1 text-sm text-muted-foreground">按号码聚合会话，查看连续对话并通过现有短信通道发送回复。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" disabled={isRefreshing} onClick={() => { void refreshStatus(false) }}>
-            <RefreshCwIcon data-icon="inline-start" className={cn(isRefreshing && "animate-spin")} />
-            刷新
-          </Button>
-          <Button type="button" onClick={() => {
-            setNewForm({ device_id: defaultDeviceId, number: "", message: "" })
-            setNewOpen(true)
-          }}>
-            <MessageSquarePlusIcon data-icon="inline-start" />
-            新建短信
-          </Button>
-        </div>
-      </section>
+  const confirmDeleteSms = () => {
+    if (!deleteTarget?.storage || !deleteTarget.raw_id) return
+    setHiddenSmsKeys((current) => current.includes(deleteTarget.id) ? current : [...current, deleteTarget.id])
+    void runAction(
+      "delete_sms",
+      {
+        device_id: deleteTarget.device_id,
+        storage: deleteTarget.storage,
+        raw_id: deleteTarget.raw_id,
+        number: deleteTarget.number,
+      },
+      `删除短信 ${deleteTarget.number}`,
+    )
+    setDeleteTarget(null)
+  }
 
-      <section className="glass-card grid min-h-[36rem] flex-1 overflow-hidden rounded-3xl lg:grid-cols-[21rem_minmax(0,1fr)]">
+  return (
+    <div className="-mx-4 -my-4 min-h-[calc(100dvh-4rem)] bg-[#F8FAFC] px-4 pb-12 pt-8 sm:-mx-6 sm:px-8 lg:mx-[-2rem] lg:my-[-1.25rem] lg:px-8 dark:bg-slate-950">
+      <div className="mx-auto flex w-full max-w-[1160px] flex-col gap-6">
+        <section className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-[28px] font-bold leading-9 text-slate-950 dark:text-slate-50">短信</h1>
+            <p className="mt-1 text-[13px] leading-5 text-[#6B7280] dark:text-slate-400">按号码聚合会话，查看连续对话并通过现有短信通道发送回复。</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" disabled={isRefreshing} onClick={() => { void refreshStatus(false) }}>
+              <RefreshCwIcon data-icon="inline-start" className={cn(isRefreshing && "animate-spin")} />
+              刷新
+            </Button>
+            <Button type="button" onClick={() => {
+              setNewForm({ device_id: defaultDeviceId, number: "", message: "" })
+              setNewOpen(true)
+            }}>
+              <MessageSquarePlusIcon data-icon="inline-start" />
+              新建短信
+            </Button>
+          </div>
+        </section>
+
+        <section className="glass-card grid min-h-[36rem] flex-1 overflow-hidden rounded-xl lg:grid-cols-[minmax(16rem,0.38fr)_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col border-b border-white/65 bg-white/42 lg:border-b-0 lg:border-r dark:border-white/10 dark:bg-slate-950/24">
           <div className="border-b border-white/70 p-4 dark:border-white/10">
             <div className="relative">
@@ -293,18 +324,31 @@ export default function SmsInboxPage() {
                   {selectedConversation.messages.length ? selectedConversation.messages.map((message) => (
                     <div key={message.id} className={cn("flex", message.direction === "outbound" ? "justify-end" : "justify-start")}>
                       <div className={cn(
-                        "max-w-[min(34rem,86%)] rounded-3xl px-4 py-3 shadow-sm",
+                        "group/message max-w-[min(34rem,86%)] rounded-3xl px-4 py-3 shadow-sm",
                         message.direction === "outbound"
                           ? "rounded-br-lg bg-blue-600 text-white"
                           : "glass-panel rounded-bl-lg text-slate-900 dark:text-slate-100",
                       )}>
                         <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.text}</p>
                         <div className={cn(
-                          "mt-2 flex items-center justify-end gap-2 text-[0.68rem]",
+                          "mt-2 flex flex-wrap items-center justify-end gap-2 text-[0.68rem]",
                           message.direction === "outbound" ? "text-blue-100" : "text-muted-foreground",
                         )}>
+                          {message.storage && message.raw_id ? <span>{message.storage} #{message.raw_id}</span> : null}
                           <span>{message.state_label}</span>
                           <span>{message.timestamp || "--"}</span>
+                          {message.canDelete ? (
+                            <button
+                              type="button"
+                              disabled={actionBusy}
+                              onClick={() => setDeleteTarget(message)}
+                              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-rose-600 opacity-70 transition hover:bg-rose-50 hover:opacity-100 disabled:pointer-events-none disabled:opacity-40 dark:text-rose-300 dark:hover:bg-rose-400/10"
+                              title="删除短信"
+                            >
+                              <Trash2Icon className="size-3" />
+                              删除
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -352,7 +396,8 @@ export default function SmsInboxPage() {
             <EmptyConversationPane />
           )}
         </main>
-      </section>
+        </section>
+      </div>
 
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent>
@@ -400,6 +445,28 @@ export default function SmsInboxPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除短信？</DialogTitle>
+            <DialogDescription>
+              删除后会从 {deleteTarget?.storage || "当前"} 存储槽位 #{deleteTarget?.raw_id || "--"} 移除，无法恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-3 text-sm text-rose-900 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-100">
+            <div className="font-medium">{deleteTarget?.number || "未知号码"}</div>
+            <p className="mt-1 whitespace-pre-wrap break-words">{deleteTarget?.text || "空短信"}</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button variant="destructive" disabled={actionBusy || !deleteTarget?.storage || !deleteTarget.raw_id} onClick={confirmDeleteSms}>
+              <Trash2Icon data-icon="inline-start" />
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -409,7 +476,20 @@ function conversationKey(deviceId: string, number: string) {
 }
 
 function smsKey(sms: SmsItem) {
-  return `${sms.device_id || "default"}:${sms.id}:${sms.timestamp}`
+  return [
+    sms.device_id || "default",
+    sms.storage || "",
+    sms.raw_id || sms.id,
+    sms.number,
+    sms.timestamp,
+    sms.text,
+  ].join(":")
+}
+
+function isReceivedSms(sms: SmsItem) {
+  const rawState = String(sms.raw_state || "").trim().toUpperCase()
+  if (rawState) return rawState === "REC READ" || rawState === "REC UNREAD"
+  return sms.state === "received"
 }
 
 function messageTime(timestamp: string) {

@@ -196,6 +196,8 @@ export function friendlyActionName(action: ActionName) {
       return "测试通知渠道"
     case "send_test_sms":
       return "发送测试短信"
+    case "delete_sms":
+      return "删除短信"
     case "save_profile_smsc":
       return "保存短信中心"
     case "run_keepalive_task":

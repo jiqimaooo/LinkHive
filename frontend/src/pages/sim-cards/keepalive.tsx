@@ -491,12 +491,12 @@ export default function KeepalivePage() {
   }
 
   return (
-    <div className="-m-4 min-h-[calc(100vh-4rem)] bg-[#F8FAFC] p-6 md:-m-6 md:p-8">
-      <div className="mx-auto w-full max-w-[1600px] space-y-6">
+    <div className="-mx-4 -my-4 min-h-[calc(100dvh-4rem)] bg-[#F8FAFC] px-4 pb-12 pt-8 sm:-mx-6 sm:px-8 lg:mx-[-2rem] lg:my-[-1.25rem] lg:px-8 dark:bg-slate-950">
+      <div className="mx-auto flex w-full max-w-[1160px] flex-col gap-6">
         <header className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-950">定时任务</h1>
-            <p className="mt-2 text-sm text-slate-500">按照设定时间自动发送短信，支持普通 SIM 和 eSIM Profile。</p>
+            <h1 className="text-[28px] font-bold leading-9 text-slate-950 dark:text-slate-50">定时任务</h1>
+            <p className="mt-1 text-[13px] leading-5 text-[#6B7280] dark:text-slate-400">按照设定时间自动发送短信，支持普通 SIM 和 eSIM Profile。</p>
           </div>
           <Button type="button" size="lg" onClick={openNewTask} disabled={!devices.length || actionBusy} className="h-10 bg-[#2563EB] px-4 shadow-[0_8px_20px_rgba(37,99,235,0.22)] hover:bg-blue-600">
             <PlusIcon data-icon="inline-start" />
@@ -506,7 +506,7 @@ export default function KeepalivePage() {
 
         <main className="rounded-xl border border-[#E5E7EB] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex flex-col gap-3 border-b border-[#E5E7EB] p-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="relative min-w-0 lg:w-[360px]">
+            <div className="relative min-w-0 lg:w-[clamp(18rem,34%,22.5rem)]">
               <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
               <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务名称" className="h-11 rounded-xl border-[#E5E7EB] bg-[#F8FAFC] pl-9" />
             </div>
@@ -514,14 +514,14 @@ export default function KeepalivePage() {
               <SelectMenu<StatusFilter>
                 value={statusFilter}
                 placeholder="全部状态"
-                className="w-[132px]"
+                className="w-[clamp(7.75rem,12vw,8.25rem)]"
                 options={[{ value: "all", label: "全部状态" }, { value: "enabled", label: "启用" }, { value: "paused", label: "暂停" }]}
                 onChange={setStatusFilter}
               />
               <SelectMenu<TaskTypeFilter>
                 value={typeFilter}
                 placeholder="全部类型"
-                className="w-[148px]"
+                className="w-[clamp(8.25rem,13vw,9.25rem)]"
                 options={[{ value: "all", label: "全部类型" }, { value: "direct", label: "普通 SIM" }, { value: "profile", label: "eSIM" }]}
                 onChange={setTypeFilter}
               />
@@ -550,7 +550,7 @@ export default function KeepalivePage() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-left text-sm">
+            <table className="w-full min-w-[900px] text-left text-sm">
               <thead className="border-b border-[#E5E7EB] bg-[#F8FAFC] text-xs font-medium text-slate-500">
                 <tr>
                   <th className="w-12 px-4 py-3">

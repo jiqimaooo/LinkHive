@@ -12,11 +12,14 @@ export type Profile = {
 
 export type SmsItem = {
   id: string
+  raw_id?: string
   device_id?: string
+  storage?: "ME" | "SM" | string
   number: string
   text: string
   timestamp: string
   state: string
+  raw_state?: string
   state_label: string
 }
 
@@ -247,6 +250,23 @@ export type ActionEvent = {
   message: string
 }
 
+export type SystemLogEntry = {
+  id?: string
+  created_at?: number
+  time: string
+  source: string
+  level: ActionLevel
+  message: string
+  action_id?: string
+}
+
+export type SystemLogsPayload = {
+  ok: boolean
+  enabled: boolean
+  retention_days: number
+  logs: SystemLogEntry[]
+}
+
 export type ActionState = "queued" | "running" | "done" | "error"
 
 export type ActionName =
@@ -256,6 +276,7 @@ export type ActionName =
   | "restart_sms"
   | "test_notification"
   | "send_test_sms"
+  | "delete_sms"
   | "save_profile_smsc"
   | "run_keepalive_task"
   | "save_apn"

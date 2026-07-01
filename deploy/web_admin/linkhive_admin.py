@@ -48,6 +48,7 @@ from notification_utils import (  # noqa: E402
 )
 from modem_direct import (  # noqa: E402
     at_command,
+    delete_sms_via_at,
     enumerate_direct_modems,
     extract_eid_from_at_response,
     get_direct_modem_info,
@@ -65,10 +66,14 @@ MODEM_BACKEND = "direct"
 NOTIFICATION_CONFIG_PATH = Path("/etc/sms-forwarder.conf")
 SMS_FORWARDER_SERVICE = "sms-forwarder.service"
 APP_CONFIG_PATH = Path("/etc/linkhive.conf")
+SECURITY_AUDIT_PATH = Path(os.environ.get("LINKHIVE_SECURITY_AUDIT_PATH", "/var/lib/linkhive/security-audit.json"))
+SYSTEM_LOG_PATH = Path(os.environ.get("LINKHIVE_SYSTEM_LOG_PATH", "/var/lib/linkhive/system-events.jsonl"))
 STATIC_DIR = Path(
     os.environ.get("FOURG_WIFI_ADMIN_STATIC_DIR", str(Path(__file__).resolve().with_name("frontend_dist")))
 )
 PROFILE_SMSC_CONFIG_KEY = "PROFILE_SMSC_CONFIG_JSON"
+SYSTEM_LOG_ENABLED_KEY = "LINKHIVE_SYSTEM_LOG_ENABLED"
+SYSTEM_LOG_RETENTION_DAYS_KEY = "LINKHIVE_SYSTEM_LOG_RETENTION_DAYS"
 AUTH_COOKIE_NAME = "linkhive_session"
 AUTH_SESSION_TTL_SECONDS = 7 * 24 * 3600
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -186,6 +191,9 @@ SMS_STORAGE_CACHE_SECONDS = 60.0
 SMS_VISIBLE_CACHE_SECONDS = 300.0
 SMS_VISIBLE_CACHE: dict[str, dict[str, Any]] = {}
 SMS_VISIBLE_CACHE_LOCK = threading.Lock()
+SECURITY_AUDIT_LOCK = threading.Lock()
+SYSTEM_LOG_LOCK = threading.Lock()
+SYSTEM_LOG_LAST_PRUNED_AT = 0.0
 
 
 def run_command(args: list[str], check: bool = True, env: Optional[dict[str, str]] = None) -> subprocess.CompletedProcess[str]:
@@ -194,6 +202,101 @@ def run_command(args: list[str], check: bool = True, env: Optional[dict[str, str
 
 def command_output_text(result: subprocess.CompletedProcess[str]) -> str:
     return (result.stdout or result.stderr or "").strip()
+
+
+def system_log_enabled() -> bool:
+    return config_flag(SYSTEM_LOG_ENABLED_KEY)
+
+
+def system_log_retention_days() -> int:
+    config = read_env_config(APP_CONFIG_PATH)
+    raw_value = str(config.get(SYSTEM_LOG_RETENTION_DAYS_KEY, "7")).strip()
+    try:
+        return max(1, min(90, int(raw_value)))
+    except ValueError:
+        return 7
+
+
+def save_system_log_settings(enabled: bool, retention_days: int) -> dict[str, Any]:
+    normalized_days = max(1, min(90, int(retention_days)))
+    config = read_env_config(APP_CONFIG_PATH)
+    config[SYSTEM_LOG_ENABLED_KEY] = "true" if enabled else "false"
+    config[SYSTEM_LOG_RETENTION_DAYS_KEY] = str(normalized_days)
+    write_env_config(APP_CONFIG_PATH, config)
+    prune_system_logs(normalized_days)
+    return {"enabled": enabled, "retention_days": normalized_days}
+
+
+def prune_system_logs(retention_days: Optional[int] = None) -> None:
+    if not SYSTEM_LOG_PATH.exists():
+        return
+    cutoff = time.time() - (retention_days or system_log_retention_days()) * 86400
+    with SYSTEM_LOG_LOCK:
+        kept: list[str] = []
+        for line in SYSTEM_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+                created_at = float(event.get("created_at", 0))
+            except Exception:
+                continue
+            if created_at >= cutoff:
+                kept.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+        SYSTEM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SYSTEM_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+
+
+def record_system_log(source: str, level: str, message: str, **extra: Any) -> None:
+    if not system_log_enabled():
+        return
+    global SYSTEM_LOG_LAST_PRUNED_AT
+    now = time.time()
+    event = {
+        "id": uuid.uuid4().hex[:12],
+        "created_at": now,
+        "time": format_beijing_timestamp(datetime.now(timezone.utc).isoformat()),
+        "source": str(source or "system"),
+        "level": str(level or "info"),
+        "message": str(message),
+        **{key: value for key, value in extra.items() if value not in (None, "")},
+    }
+    with SYSTEM_LOG_LOCK:
+        SYSTEM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SYSTEM_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    if now - SYSTEM_LOG_LAST_PRUNED_AT > 3600:
+        SYSTEM_LOG_LAST_PRUNED_AT = now
+        prune_system_logs()
+
+
+def load_system_logs(limit: int = 300) -> list[dict[str, Any]]:
+    prune_system_logs()
+    if not SYSTEM_LOG_PATH.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    with SYSTEM_LOG_LOCK:
+        lines = SYSTEM_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    for line in lines[-max(1, min(1000, limit)):]:
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(event, dict):
+            entries.append(event)
+    return entries
+
+
+def clear_system_logs() -> None:
+    with SYSTEM_LOG_LOCK:
+        SYSTEM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SYSTEM_LOG_PATH.write_text("", encoding="utf-8")
+
+
+def system_logs_payload() -> dict[str, Any]:
+    return {
+        "enabled": system_log_enabled(),
+        "retention_days": system_log_retention_days(),
+        "logs": load_system_logs(),
+    }
 
 
 def is_transient_modem_error(message: str) -> bool:
@@ -382,6 +485,12 @@ def format_sms_state_label(state: str) -> str:
     }.get(state, state or "未知")
 
 
+def sms_sort_id(item: dict[str, Any]) -> int:
+    raw_id = str(item.get("raw_id") or item.get("id") or "")
+    match = re.search(r"\d+", raw_id)
+    return int(match.group(0)) if match else 0
+
+
 def time_label_now() -> str:
     return datetime.now(BEIJING_TZ).strftime("%H:%M:%S")
 
@@ -493,7 +602,28 @@ def verify_password(password: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
-def sign_session(username: str, expires_at: int) -> str:
+def auth_session_version() -> str:
+    return read_env_config(APP_CONFIG_PATH).get("LINKHIVE_AUTH_SESSION_VERSION", "0").strip() or "0"
+
+
+def bump_auth_session_version() -> str:
+    config = read_env_config(APP_CONFIG_PATH)
+    current = config.get("LINKHIVE_AUTH_SESSION_VERSION", "0").strip()
+    try:
+        next_version = str(int(current) + 1)
+    except ValueError:
+        next_version = str(int(time.time()))
+    config["LINKHIVE_AUTH_SESSION_VERSION"] = next_version
+    write_env_config(APP_CONFIG_PATH, config)
+    return next_version
+
+
+def sign_session(username: str, expires_at: int, session_version: str = "0", session_id: str = "") -> str:
+    message = f"{username}:{expires_at}:{session_version}:{session_id}".encode("utf-8")
+    return hmac.new(auth_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def sign_legacy_session(username: str, expires_at: int) -> str:
     message = f"{username}:{expires_at}".encode("utf-8")
     return hmac.new(auth_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
 
@@ -585,18 +715,62 @@ def brute_force_lan_enabled() -> bool:
     return config.get("LINKHIVE_BRUTE_FORCE_LAN_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
 
 
-def banned_ips() -> set[str]:
+def brute_force_ban_duration_seconds() -> int:
+    config = read_env_config(APP_CONFIG_PATH)
+    try:
+        value = int(config.get("LINKHIVE_BRUTE_FORCE_BAN_DURATION_SECONDS", "1800"))
+    except ValueError:
+        value = 1800
+    return max(60, min(30 * 24 * 3600, value))
+
+
+def banned_ip_records() -> dict[str, dict[str, Any]]:
     config = read_env_config(APP_CONFIG_PATH)
     raw = config.get("LINKHIVE_BRUTE_FORCE_BANNED_IPS", "[]")
     try:
-        return set(json.loads(raw))
+        parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        return set()
+        return {}
+    now = time.time()
+    records: dict[str, dict[str, Any]] = {}
+    if isinstance(parsed, list):
+        expires_at = now + brute_force_ban_duration_seconds()
+        for ip in parsed:
+            ip_text = str(ip).strip()
+            if ip_text:
+                records[ip_text] = {"banned_at": now, "expires_at": expires_at}
+    elif isinstance(parsed, dict):
+        for ip, value in parsed.items():
+            ip_text = str(ip).strip()
+            if not ip_text:
+                continue
+            item = value if isinstance(value, dict) else {}
+            expires_at = float(item.get("expires_at") or 0)
+            if expires_at and expires_at <= now:
+                continue
+            records[ip_text] = {
+                "banned_at": float(item.get("banned_at") or now),
+                "expires_at": expires_at or now + brute_force_ban_duration_seconds(),
+            }
+    return records
+
+
+def banned_ips() -> set[str]:
+    return set(banned_ip_records().keys())
 
 
 def save_banned_ips(ips: set[str]) -> None:
+    now = time.time()
+    records = {
+        ip: {"banned_at": now, "expires_at": now + brute_force_ban_duration_seconds()}
+        for ip in sorted(ips)
+    }
+    save_banned_ip_records(records)
+
+
+def save_banned_ip_records(records: dict[str, dict[str, Any]]) -> None:
     config = read_env_config(APP_CONFIG_PATH)
-    config["LINKHIVE_BRUTE_FORCE_BANNED_IPS"] = json.dumps(sorted(ips))
+    config["LINKHIVE_BRUTE_FORCE_BANNED_IPS"] = json.dumps(records, sort_keys=True)
     write_env_config(APP_CONFIG_PATH, config)
 
 
@@ -635,10 +809,106 @@ def is_ip_banned(ip: str) -> bool:
     return False
 
 
-def make_session_cookie(username: str) -> str:
+def default_security_audit() -> dict[str, Any]:
+    return {"sessions": [], "logins": [], "failures": []}
+
+
+def read_security_audit() -> dict[str, Any]:
+    try:
+        data = json.loads(SECURITY_AUDIT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return default_security_audit()
+    if not isinstance(data, dict):
+        return default_security_audit()
+    result = default_security_audit()
+    for key in result:
+        value = data.get(key)
+        result[key] = value if isinstance(value, list) else []
+    return result
+
+
+def write_security_audit(data: dict[str, Any]) -> None:
+    SECURITY_AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SECURITY_AUDIT_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def user_agent_label(user_agent: str) -> str:
+    value = str(user_agent or "").strip()
+    if not value:
+        return "未知设备"
+    browser = "Safari" if "Safari" in value and "Chrome" not in value else "Chrome" if "Chrome" in value else "Firefox" if "Firefox" in value else "浏览器"
+    os_name = "macOS" if "Mac OS X" in value else "iOS" if "iPhone" in value or "iPad" in value else "Windows" if "Windows" in value else "Linux" if "Linux" in value else "未知系统"
+    return f"{browser} / {os_name}"
+
+
+def iso_now() -> str:
+    return datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
+
+
+def prune_security_audit(data: dict[str, Any]) -> dict[str, Any]:
+    now = time.time()
+    sessions = []
+    for item in data.get("sessions", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            expires_at = int(item.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        if expires_at > now:
+            sessions.append(item)
+    data["sessions"] = sessions[-50:]
+    data["logins"] = [item for item in data.get("logins", []) if isinstance(item, dict)][-50:]
+    data["failures"] = [item for item in data.get("failures", []) if isinstance(item, dict)][-80:]
+    return data
+
+
+def record_login_success(username: str, ip: str, user_agent: str, session_id: str, expires_at: int) -> None:
+    with SECURITY_AUDIT_LOCK:
+        data = prune_security_audit(read_security_audit())
+        item = {
+            "session_id": session_id,
+            "username": username,
+            "ip": ip,
+            "user_agent": user_agent,
+            "device": user_agent_label(user_agent),
+            "login_at": iso_now(),
+            "expires_at": expires_at,
+        }
+        data["sessions"] = [session for session in data["sessions"] if session.get("session_id") != session_id]
+        data["sessions"].append(item)
+        data["logins"].append(item)
+        write_security_audit(prune_security_audit(data))
+
+
+def record_login_failure(username: str, ip: str, user_agent: str, reason: str) -> None:
+    with SECURITY_AUDIT_LOCK:
+        data = prune_security_audit(read_security_audit())
+        data["failures"].append({
+            "username": username,
+            "ip": ip,
+            "user_agent": user_agent,
+            "device": user_agent_label(user_agent),
+            "time": iso_now(),
+            "reason": reason,
+        })
+        write_security_audit(prune_security_audit(data))
+
+
+def clear_security_sessions() -> None:
+    with SECURITY_AUDIT_LOCK:
+        data = prune_security_audit(read_security_audit())
+        data["sessions"] = []
+        write_security_audit(data)
+
+
+def make_session_cookie(username: str, ip: str = "", user_agent: str = "") -> str:
     expires_at = int(time.time()) + AUTH_SESSION_TTL_SECONDS
-    signature = sign_session(username, expires_at)
-    return f"{username}:{expires_at}:{signature}"
+    session_version = auth_session_version()
+    session_id = secrets.token_urlsafe(12)
+    signature = sign_session(username, expires_at, session_version, session_id)
+    record_login_success(username, ip, user_agent, session_id, expires_at)
+    return f"{username}:{expires_at}:{session_version}:{session_id}:{signature}"
 
 
 def parse_cookie_header(raw_cookie: str) -> dict[str, str]:
@@ -656,17 +926,72 @@ def valid_session_cookie(raw_cookie: str) -> bool:
         return True
     session_value = parse_cookie_header(raw_cookie).get(AUTH_COOKIE_NAME, "")
     parts = session_value.split(":")
-    if len(parts) != 3:
+    if len(parts) not in {3, 5}:
         return False
-    username, raw_expires_at, signature = parts
+    if len(parts) == 3:
+        username, raw_expires_at, signature = parts
+        session_version = "0"
+        session_id = ""
+    else:
+        username, raw_expires_at, session_version, session_id, signature = parts
     try:
         expires_at = int(raw_expires_at)
     except ValueError:
         return False
     if username != auth_username() or expires_at < int(time.time()):
         return False
-    expected = sign_session(username, expires_at)
+    if session_version != auth_session_version():
+        return False
+    expected = sign_legacy_session(username, expires_at) if len(parts) == 3 else sign_session(username, expires_at, session_version, session_id)
     return hmac.compare_digest(signature, expected)
+
+
+def session_id_from_cookie(raw_cookie: str) -> str:
+    session_value = parse_cookie_header(raw_cookie).get(AUTH_COOKIE_NAME, "")
+    parts = session_value.split(":")
+    return parts[3] if len(parts) == 5 else ""
+
+
+def security_overview_payload(raw_cookie: str, client_ip: str, user_agent: str) -> dict[str, Any]:
+    with SECURITY_AUDIT_LOCK:
+        data = prune_security_audit(read_security_audit())
+        write_security_audit(data)
+    current_session_id = session_id_from_cookie(raw_cookie)
+    sessions = data.get("sessions", [])
+    current = next((item for item in sessions if item.get("session_id") == current_session_id), None)
+    if not current:
+        current = {
+            "session_id": current_session_id or "legacy-current",
+            "username": auth_username(),
+            "ip": client_ip,
+            "user_agent": user_agent,
+            "device": user_agent_label(user_agent),
+            "login_at": "",
+            "expires_at": 0,
+            "current": True,
+        }
+    enriched_sessions = []
+    for item in sessions:
+        enriched_sessions.append({**item, "current": bool(current_session_id and item.get("session_id") == current_session_id)})
+    if not any(item.get("current") for item in enriched_sessions):
+        enriched_sessions.insert(0, current)
+    logins = data.get("logins", [])
+    failures = data.get("failures", [])
+    recent_login = logins[-1] if logins else current
+    return {
+        "current_session_id": current_session_id,
+        "sessions": enriched_sessions,
+        "recent_login": recent_login,
+        "recent_login_time": recent_login.get("login_at", ""),
+        "recent_login_ip": recent_login.get("ip", client_ip),
+        "failures": list(reversed(failures[-20:])),
+        "failure_count": len(failures),
+        "ban_duration_seconds": brute_force_ban_duration_seconds(),
+        "banned": [
+            {"ip": ip, **record}
+            for ip, record in sorted(banned_ip_records().items())
+        ],
+    }
 
 
 def parse_iso_datetime(raw_value: str) -> Optional[datetime]:
@@ -1812,9 +2137,24 @@ def stable_cached_list_sms(device_id: str) -> tuple[list[dict[str, str]], Option
         remember_visible_sms(device_id, messages)
         return messages, error
     fallback = last_visible_sms(device_id)
-    if fallback and (not error or is_transient_modem_error(error)):
+    if fallback and error and is_transient_modem_error(error):
         return fallback, None
     return messages, error
+
+
+def clear_sms_caches(device_id: str = "") -> None:
+    keys = {
+        f"sms-list:{device_id or 'primary'}",
+        f"sms-storage:{device_id or 'primary'}",
+    }
+    with SLOW_PROBE_CACHE_LOCK:
+        for key in keys:
+            SLOW_PROBE_CACHE.pop(key, None)
+    with SMS_VISIBLE_CACHE_LOCK:
+        if device_id:
+            SMS_VISIBLE_CACHE.pop(cached_visible_sms_key(device_id), None)
+        else:
+            SMS_VISIBLE_CACHE.clear()
 
 
 def cached_sms_storage_counts(modem: dict[str, str], fallback_count: int) -> dict[str, Any]:
@@ -2245,6 +2585,24 @@ def send_sms_message(
     ctx.log(success_message)
 
 
+def delete_sms_message(ctx: ActionContext, payload: dict[str, Any]) -> None:
+    device_id = str(payload.get("device_id", "")).strip()
+    storage = str(payload.get("storage", "")).strip().upper()
+    raw_id = str(payload.get("raw_id", payload.get("id", ""))).strip()
+    number = str(payload.get("number", "")).strip()
+    if storage not in {"ME", "SM"}:
+        raise ValueError("缺少有效的短信存储位置")
+    if not re.fullmatch(r"\d+", raw_id):
+        raise ValueError("缺少有效的短信 ID")
+    ctx.log(f"删除短信：{storage}/{raw_id}{f'（{number}）' if number else ''}")
+    try:
+        delete_sms_via_at(device_id, storage, raw_id)
+    except Exception as exc:
+        raise RuntimeError(f"删除短信失败：{exc}") from exc
+    clear_sms_caches(device_id)
+    ctx.log("短信已删除")
+
+
 def send_keepalive_sms(ctx: ActionContext, number: str, text: str, device_id: str = "") -> None:
     send_sms_message(
         ctx,
@@ -2424,7 +2782,7 @@ def get_status(refresh_profiles: bool = False, refresh_devices: bool = False) ->
         if not status_message:
             status_message = "暂时拿不到部分短信列表，可能是基带还在重新注册。"
         errors.extend(sms_errors)
-    sms_messages.sort(key=lambda item: int(item.get("id") or "0"), reverse=True)
+    sms_messages.sort(key=sms_sort_id, reverse=True)
     sms_storage = cached_sms_storage_counts(modem, len(sms_messages))
     # KPI 展示以当前可读取的短信列表为准，避免 ME/SM 存储计数重复相加。
     sms_storage["readable_count"] = len(sms_messages)
@@ -2546,6 +2904,7 @@ class ActionContext:
     def log(self, message: str, level: str = "info") -> None:
         self.messages.append(message)
         append_action_event(self.action_id, level, message)
+        record_system_log("action", level, message, action_id=self.action_id)
 
     def command(self, args: list[str]) -> None:
         self.log(f"$ {format_command(args)}", "command")
@@ -3255,6 +3614,9 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
     if action == "send_test_sms":
         send_test_sms(ctx, payload)
         return
+    if action == "delete_sms":
+        delete_sms_message(ctx, payload)
+        return
     if action == "save_profile_smsc":
         save_profile_smsc(ctx, payload)
         return
@@ -3708,8 +4070,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 "enabled": brute_force_enabled(),
                 "max_attempts": brute_force_max_attempts(),
                 "lan_enabled": brute_force_lan_enabled(),
+                "ban_duration_seconds": brute_force_ban_duration_seconds(),
                 "banned_ips": sorted(banned_ips()),
+                "banned": [{"ip": ip, **record} for ip, record in sorted(banned_ip_records().items())],
             })
+            return
+
+        if path == "/api/auth/security-overview":
+            if not self._require_auth():
+                return
+            self._write_json(200, security_overview_payload(self.headers.get("Cookie", ""), self._client_ip(), self.headers.get("User-Agent", "")))
             return
 
         if path.startswith("/api/") and not self._require_auth():
@@ -3721,7 +4091,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 refresh_devices = "refresh_devices=1" in parsed.query
                 self._write_json(200, get_status(refresh_profiles=refresh_profiles, refresh_devices=refresh_devices))
             except Exception as exc:
+                record_system_log("api", "error", f"状态读取失败：{exc}")
                 self._write_json(500, {"error": str(exc)})
+            return
+
+        if path == "/api/system-logs":
+            self._write_json(200, {"ok": True, **system_logs_payload()})
             return
 
         if path.startswith("/api/action/"):
@@ -3764,6 +4139,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
                 if username != auth_username() or not verify_password(password):
                     record_failed_attempt(client_ip)
+                    record_login_failure(username, client_ip, self.headers.get("User-Agent", ""), "用户名或密码不正确")
                     self._write_json(401, {"error": "用户名或密码不正确", "authenticated": False})
                     return
                 if totp_enabled() and not totp_code_value:
@@ -3772,9 +4148,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 if totp_enabled():
                     if not verify_totp(totp_secret(), totp_code_value):
                         record_failed_attempt(client_ip)
+                        record_login_failure(username, client_ip, self.headers.get("User-Agent", ""), "二次认证验证码不正确")
                         self._write_json(401, {"error": "二次认证验证码不正确"})
                         return
-                cookie_value = make_session_cookie(username)
+                cookie_value = make_session_cookie(username, client_ip, self.headers.get("User-Agent", ""))
                 self._write_json(
                     200,
                     {"ok": True, "authenticated": True, "username": username},
@@ -3787,6 +4164,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._write_json(
                     200,
                     {"ok": True, "authenticated": False},
+                    extra_headers={"Set-Cookie": self._cookie_header("", max_age=0)},
+                )
+                return
+            if path == "/api/auth/logout-all":
+                if not self._require_auth():
+                    return
+                bump_auth_session_version()
+                clear_security_sessions()
+                self._write_json(
+                    200,
+                    {"ok": True, "authenticated": False, "message": "已注销所有设备"},
                     extra_headers={"Set-Cookie": self._cookie_header("", max_age=0)},
                 )
                 return
@@ -3859,10 +4247,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 enabled = str(data.get("enabled", "false")).strip().lower()
                 max_attempts = str(data.get("max_attempts", "5")).strip()
                 lan_enabled = str(data.get("lan_enabled", "false")).strip().lower()
+                ban_duration_seconds = str(data.get("ban_duration_seconds", "")).strip()
                 config = read_env_config(APP_CONFIG_PATH)
                 config["LINKHIVE_BRUTE_FORCE_ENABLED"] = "true" if enabled in {"1", "true", "yes"} else "false"
                 config["LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS"] = max_attempts
                 config["LINKHIVE_BRUTE_FORCE_LAN_ENABLED"] = "true" if lan_enabled in {"1", "true", "yes"} else "false"
+                if ban_duration_seconds:
+                    try:
+                        duration_value = max(60, min(30 * 24 * 3600, int(ban_duration_seconds)))
+                    except ValueError:
+                        duration_value = brute_force_ban_duration_seconds()
+                    config["LINKHIVE_BRUTE_FORCE_BAN_DURATION_SECONDS"] = str(duration_value)
                 write_env_config(APP_CONFIG_PATH, config)
                 self._write_json(200, {"ok": True, "message": "防暴力破解配置已更新"})
                 return
@@ -3873,10 +4268,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not ip:
                     self._write_json(400, {"error": "缺少 IP"})
                     return
-                current = banned_ips()
+                records = banned_ip_records()
+                current = set(records.keys())
                 if ip in current:
-                    current.remove(ip)
-                    save_banned_ips(current)
+                    records.pop(ip, None)
+                    save_banned_ip_records(records)
                 self._write_json(200, {"ok": True, "message": f"已解封 {ip}"})
                 return
             if path.startswith("/api/") and not self._require_auth():
@@ -3888,6 +4284,21 @@ class AppHandler(BaseHTTPRequestHandler):
                     raise ValueError("payload 必须是对象")
                 action_id = start_action(action, payload)
                 self._write_json(200, {"ok": True, "id": action_id})
+                return
+            if path == "/api/system-logs":
+                action = str(data.get("action", "save")).strip()
+                if action == "clear":
+                    clear_system_logs()
+                    self._write_json(200, {"ok": True, **system_logs_payload()})
+                    return
+                enabled = bool(data.get("enabled", False))
+                try:
+                    retention_days = int(data.get("retention_days", system_log_retention_days()))
+                except (TypeError, ValueError):
+                    retention_days = system_log_retention_days()
+                settings = save_system_log_settings(enabled, retention_days)
+                record_system_log("system", "info", "系统日志记录已开启" if enabled else "系统日志记录已关闭")
+                self._write_json(200, {"ok": True, **settings, "logs": load_system_logs()})
                 return
             if path == "/api/profile/switch":
                 self._handle_sync_action("switch_profile", data)

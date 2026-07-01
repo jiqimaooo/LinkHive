@@ -1079,6 +1079,38 @@ def list_sms_via_at(device_id: str = "") -> tuple[list[dict[str, str]], Optional
         return [], str(exc)
 
 
+def delete_sms_via_at(device_id: str, storage: str, sms_id: str) -> None:
+    status, error = get_direct_modem_info(device_id)
+    at_port = status.get("linkhive.at_port", "")
+    if error and not at_port:
+        raise RuntimeError(error)
+    if not at_port:
+        raise RuntimeError("未找到 AT 端口，无法删除短信")
+    storage = str(storage or "").strip().upper()
+    if storage not in {"ME", "SM"}:
+        raise ValueError("短信存储必须是 ME 或 SM")
+    sms_id = str(sms_id or "").strip()
+    if not re.fullmatch(r"\d+", sms_id):
+        raise ValueError("短信 ID 必须是数字")
+
+    original_memories: list[str] = []
+    try:
+        original_memories = _parse_cpms_memories(at_command(at_port, "AT+CPMS?", 1.5))
+        response = at_command(at_port, _cpms_set_command([storage, storage, storage]), 1.5)
+        if "ERROR" in response or "+CMS ERROR" in response:
+            raise RuntimeError(_single_line(response) or f"无法切换到 {storage} 短信存储")
+        output = at_command(at_port, f"AT+CMGD={sms_id}", 3.0)
+        if "ERROR" in output or "+CMS ERROR" in output:
+            raise RuntimeError(_single_line(output) or "短信删除失败")
+    finally:
+        if original_memories:
+            try:
+                restore_memories = (original_memories + ["MT", "MT", "MT"])[:3]
+                at_command(at_port, _cpms_set_command(restore_memories), 1.0)
+            except Exception:
+                pass
+
+
 def send_sms_via_at(number: str, text: str, device_id: str = "") -> None:
     status, error = get_direct_modem_info(device_id)
     at_port = status.get("linkhive.at_port", "")
@@ -1156,16 +1188,21 @@ def _list_sms_from_all_storages(at_port: str, device_id: str) -> list[dict[str, 
         except Exception:
             continue
         for message in _parse_cmgl(raw, device_id):
+            raw_state = str(message.get("raw_state", "")).upper()
+            if raw_state not in {"REC READ", "REC UNREAD"}:
+                continue
             key = (
+                memory,
+                message.get("raw_id", message.get("id", "")),
                 message.get("number", ""),
                 message.get("timestamp", ""),
-                message.get("state", ""),
                 message.get("text", ""),
             )
             if key in seen:
                 continue
             seen.add(key)
-            merged.append({**message, "storage": memory})
+            raw_id = message.get("raw_id", message.get("id", ""))
+            merged.append({**message, "id": f"{memory}:{raw_id}", "raw_id": raw_id, "storage": memory})
 
     if original_memories:
         try:
@@ -1174,7 +1211,7 @@ def _list_sms_from_all_storages(at_port: str, device_id: str) -> list[dict[str, 
         except Exception:
             pass
 
-    merged.sort(key=lambda item: int(item.get("id") or "0"), reverse=True)
+    merged.sort(key=lambda item: int(item.get("raw_id") or "0"), reverse=True)
     return merged
 
 
@@ -1371,11 +1408,13 @@ def _parse_cmgl(raw: str, device_id: str) -> list[dict[str, str]]:
         messages.append(
             {
                 "id": sms_id,
+                "raw_id": sms_id,
                 "device_id": device_id,
                 "number": number,
                 "text": "\n".join(text_lines).strip(),
                 "timestamp": timestamp,
                 "state": normalized_state,
+                "raw_state": state,
                 "state_label": {
                     "received": "已接收",
                     "sent": "已发送",

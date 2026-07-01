@@ -7,7 +7,6 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   InfoIcon,
-  TerminalIcon,
   SendIcon,
   XIcon,
 } from "lucide-react"
@@ -44,11 +43,6 @@ const MAIN_MENU = [
       { title: "安全中心", path: "/settings/security", icon: ShieldCheckIcon },
       { title: "关于", path: "/settings/about", icon: InfoIcon },
     ],
-  },
-  {
-    title: "实时日志",
-    path: "/logs",
-    icon: TerminalIcon,
   },
 ]
 
