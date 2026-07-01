@@ -202,20 +202,6 @@ LINKHIVE_COOKIE_SECURE=1
 - eSIM 能力取决于硬件、eUICC、驱动、`lpac` 与模组 USB 模式。
 - 不同运营商的 APN、SMSC 和注册行为可能不同，需要按实际卡片调整。
 
-## 来源声明
-
-本项目基于并参考了 [cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder) 的思路和部分实现进行修改与扩展。原项目使用 MIT License，版权声明已保留在 [LICENSE](./LICENSE) 中。
-
-LinkHive 在原项目基础上的主要变更：
-
-- 项目名称与部署路径改为 LinkHive。
-- 普通 SIM 与 eSIM 从安装期分离改为同一系统内运行期互斥切换。
-- 重新设计 Web 控制台 UI。
-- 增加登录鉴权、安全配置、二次认证接口与防暴力破解逻辑。
-- 增加 Docker 相关部署文件。
-
-如需了解原始项目，请访问：[cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder)。
-
 ## License
 
 本项目使用 MIT License，详见 [LICENSE](./LICENSE)。
@@ -223,3 +209,21 @@ LinkHive 在原项目基础上的主要变更：
 ## 免责声明
 
 本项目仅用于合法的设备管理、短信转发和网络运维场景。使用者需要自行确认当地法律法规、运营商条款和设备授权要求。作者不对错误配置、违规使用、运营商限制、资费损失或设备损坏承担责任。
+
+## 来源与重构说明
+
+LinkHive 基于并参考了 [cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder) 的思路和部分实现进行二次开发。原项目使用 MIT License，版权声明已保留在 [LICENSE](./LICENSE) 中。
+
+经过持续重构后，LinkHive 已作为独立维护项目发展，重点变化包括：
+
+- 项目名称、安装路径、服务名称和部署链路改为 LinkHive。
+- Web 控制台已从原有单页管理界面重构为多页面 SaaS 风格后台。
+- 增加登录鉴权、安全中心、二次认证接口、防暴力破解、会话管理和操作日志能力。
+- 重构设备管理、短信管理、通知转发、定时任务、系统设置和移动端适配。
+- 普通 SIM 与 eSIM 从安装期分离改为运行期管理，并支持多设备、多 Profile 的展示和配置。
+- 增加直连 Quectel 模组的 QMI/AT 混合基带访问能力，逐步减少对 ModemManager 的依赖。
+- 增加 Docker、Release、远端部署和前端构建发布相关脚本。
+
+因此，LinkHive 可以视为在 MIT 许可基础上二次开发并大幅重构后的独立项目；但它并不是与原项目完全无关的从零实现，仍保留上游项目的版权声明和来源说明。
+
+如需了解原始项目，请访问：[cyDione/eSIM-SMS-Forwarder](https://github.com/cyDione/eSIM-SMS-Forwarder)。
