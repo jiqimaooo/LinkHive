@@ -1071,12 +1071,27 @@ def list_sms_via_at(device_id: str = "") -> tuple[list[dict[str, str]], Optional
         return [], error
     if not at_port:
         return [], "未找到 AT 端口，无法读取短信"
+    original_charset = ""
     try:
+        try:
+            original_charset = _parse_cscs(at_command(at_port, "AT+CSCS?", 1.0))
+        except Exception:
+            original_charset = ""
         at_command(at_port, "AT+CMGF=1", 1.2)
+        try:
+            at_command(at_port, 'AT+CSCS="UCS2"', 1.2)
+        except Exception:
+            pass
         messages = _list_sms_from_all_storages(at_port, device_id)
         return messages, None
     except Exception as exc:
         return [], str(exc)
+    finally:
+        if original_charset:
+            try:
+                at_command(at_port, f'AT+CSCS="{original_charset}"', 1.0)
+            except Exception:
+                pass
 
 
 def delete_sms_via_at(device_id: str, storage: str, sms_id: str) -> None:
@@ -1222,6 +1237,11 @@ def _cpms_set_command(memories: list[str]) -> str:
 
 def _parse_cpms_memories(raw_response: str) -> list[str]:
     return re.findall(r'"([^"]+)"\s*,\s*\d+\s*,\s*\d+', raw_response)[:3]
+
+
+def _parse_cscs(raw_response: str) -> str:
+    match = re.search(r'\+CSCS:\s*"([^"]+)"', raw_response)
+    return match.group(1) if match else ""
 
 
 def at_command(port: str, command: str, timeout_seconds: float = 1.5) -> str:
@@ -1383,6 +1403,48 @@ def _single_line(raw: str) -> str:
     return " ".join(line.strip() for line in raw.splitlines() if line.strip())
 
 
+def _decode_mojibake_text(raw_text: str) -> str:
+    text = str(raw_text or "")
+    if not text:
+        return ""
+    try:
+        repaired = text.encode("latin1").decode("utf-8")
+    except Exception:
+        return text
+    replacement_count = text.count("�")
+    repaired_replacement_count = repaired.count("�")
+    if repaired and repaired_replacement_count <= replacement_count:
+        return repaired
+    return text
+
+
+def _decode_ucs2_hex(raw_text: str) -> str:
+    compact = re.sub(r"\s+", "", str(raw_text or "").strip())
+    if len(compact) < 4 or len(compact) % 4 != 0 or not re.fullmatch(r"[0-9A-Fa-f]+", compact):
+        return ""
+    try:
+        decoded = bytes.fromhex(compact).decode("utf-16-be")
+    except Exception:
+        return ""
+    printable = sum(ch.isprintable() or ch in "\r\n\t" for ch in decoded)
+    if not decoded or printable / len(decoded) < 0.8:
+        return ""
+    return decoded.strip()
+
+
+def _decode_at_text(raw_text: str) -> str:
+    text = str(raw_text or "").strip()
+    if not text:
+        return ""
+    decoded = _decode_ucs2_hex(text)
+    if decoded:
+        return decoded
+    if "\n" in text:
+        parts = [_decode_ucs2_hex(part) or _decode_mojibake_text(part) for part in text.splitlines()]
+        return "\n".join(part for part in parts if part).strip()
+    return _decode_mojibake_text(text)
+
+
 def _parse_cmgl(raw: str, device_id: str) -> list[dict[str, str]]:
     lines = [line.strip() for line in raw.splitlines() if line.strip() and not line.startswith("AT+") and line.strip() != "OK"]
     messages: list[dict[str, str]] = []
@@ -1410,8 +1472,8 @@ def _parse_cmgl(raw: str, device_id: str) -> list[dict[str, str]]:
                 "id": sms_id,
                 "raw_id": sms_id,
                 "device_id": device_id,
-                "number": number,
-                "text": "\n".join(text_lines).strip(),
+                "number": _decode_at_text(number) or number,
+                "text": _decode_at_text("\n".join(text_lines)),
                 "timestamp": timestamp,
                 "state": normalized_state,
                 "raw_state": state,

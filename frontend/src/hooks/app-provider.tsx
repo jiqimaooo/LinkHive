@@ -87,11 +87,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const refreshStatus = useCallback(async (silent = false, refreshProfiles = false) => {
+  const refreshStatus = useCallback(async (silent = false, refreshProfiles = false, refreshSms = false) => {
     if (!silent) setIsRefreshing(true)
     try {
+      const params = new URLSearchParams()
+      if (refreshProfiles) params.set("refresh_profiles", "1")
+      if (refreshSms) params.set("refresh_sms", "1")
+      const query = params.toString()
       const snapshot = await requestJson<StatusData>(
-        refreshProfiles ? "/api/status?refresh_profiles=1" : "/api/status",
+        query ? `/api/status?${query}` : "/api/status",
       )
       setStatus(snapshot)
       syncFormsFromStatus(snapshot)

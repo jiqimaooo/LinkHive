@@ -84,6 +84,7 @@ export default function SmsInboxPage() {
   const conversations = useMemo(() => {
     const deviceLabel = (deviceId?: string) => devices.find((device) => device.id === deviceId)?.label || "当前设备"
     const map = new Map<string, Conversation>()
+    const persistedOutboundCounts = new Map<string, number>()
 
     const ensureConversation = (deviceId: string, number: string) => {
       const key = conversationKey(deviceId, number)
@@ -113,14 +114,14 @@ export default function SmsInboxPage() {
     }
 
     for (const sms of smsList) {
-      if (!isReceivedSms(sms)) continue
       const id = smsKey(sms)
       if (hiddenSmsKeys.includes(id)) continue
       const deviceId = sms.device_id || defaultDeviceId
+      const direction = smsDirection(sms)
       appendMessage({
         id,
         key: conversationKey(deviceId, sms.number),
-        direction: "inbound",
+        direction,
         device_id: deviceId,
         number: sms.number,
         text: sms.text || "空短信",
@@ -129,11 +130,21 @@ export default function SmsInboxPage() {
         storage: sms.storage,
         raw_id: sms.raw_id || sms.id,
         raw_state: sms.raw_state,
-        canDelete: Boolean(sms.storage && (sms.raw_id || sms.id)),
+        canDelete: Boolean(sms.db_id || sms.id || (sms.storage && sms.raw_id)),
       })
+      if (direction === "outbound") {
+        const key = localMessageKey(deviceId, sms.number, sms.text)
+        persistedOutboundCounts.set(key, (persistedOutboundCounts.get(key) || 0) + 1)
+      }
     }
 
     for (const outgoing of localMessages) {
+      const key = localMessageKey(outgoing.device_id, outgoing.number, outgoing.text)
+      const persistedCount = persistedOutboundCounts.get(key) || 0
+      if (persistedCount > 0) {
+        persistedOutboundCounts.set(key, persistedCount - 1)
+        continue
+      }
       appendMessage({
         id: outgoing.id,
         key: conversationKey(outgoing.device_id, outgoing.number),
@@ -187,6 +198,14 @@ export default function SmsInboxPage() {
   const selectedDeviceId = selectedConversation?.device_id || defaultDeviceId
   const selectedNumber = selectedConversation?.number || ""
 
+  useEffect(() => {
+    void refreshStatus(true, false, true)
+    const intervalId = window.setInterval(() => {
+      void refreshStatus(true, false, true)
+    }, 5000)
+    return () => { window.clearInterval(intervalId) }
+  }, [refreshStatus])
+
   const submitMessage = (number: string, message: string, deviceId: string, closeDialog = false) => {
     const cleanNumber = number.trim()
     const cleanMessage = message.trim()
@@ -210,11 +229,12 @@ export default function SmsInboxPage() {
   }
 
   const confirmDeleteSms = () => {
-    if (!deleteTarget?.storage || !deleteTarget.raw_id) return
+    if (!deleteTarget) return
     setHiddenSmsKeys((current) => current.includes(deleteTarget.id) ? current : [...current, deleteTarget.id])
     void runAction(
       "delete_sms",
       {
+        db_id: deleteTarget.id,
         device_id: deleteTarget.device_id,
         storage: deleteTarget.storage,
         raw_id: deleteTarget.raw_id,
@@ -234,7 +254,7 @@ export default function SmsInboxPage() {
             <p className="mt-1 text-[13px] leading-5 text-[#6B7280] dark:text-slate-400">按号码聚合会话，查看连续对话并通过现有短信通道发送回复。</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" disabled={isRefreshing} onClick={() => { void refreshStatus(false) }}>
+            <Button type="button" variant="outline" disabled={isRefreshing} onClick={() => { void refreshStatus(false, false, true) }}>
               <RefreshCwIcon data-icon="inline-start" className={cn(isRefreshing && "animate-spin")} />
               刷新
             </Button>
@@ -451,7 +471,7 @@ export default function SmsInboxPage() {
           <DialogHeader>
             <DialogTitle>确认删除短信？</DialogTitle>
             <DialogDescription>
-              删除后会从 {deleteTarget?.storage || "当前"} 存储槽位 #{deleteTarget?.raw_id || "--"} 移除，无法恢复。
+              删除后会从本地短信库移除；如果设备存储中仍有对应槽位，也会一并尝试删除。
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-3 text-sm text-rose-900 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-100">
@@ -460,7 +480,7 @@ export default function SmsInboxPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" disabled={actionBusy || !deleteTarget?.storage || !deleteTarget.raw_id} onClick={confirmDeleteSms}>
+            <Button variant="destructive" disabled={actionBusy || !deleteTarget} onClick={confirmDeleteSms}>
               <Trash2Icon data-icon="inline-start" />
               删除
             </Button>
@@ -475,7 +495,12 @@ function conversationKey(deviceId: string, number: string) {
   return `${deviceId || "default"}::${(number || "unknown").trim()}`
 }
 
+function localMessageKey(deviceId: string, number: string, text: string) {
+  return `${deviceId || "default"}::${number.trim()}::${text.trim()}`
+}
+
 function smsKey(sms: SmsItem) {
+  if (sms.db_id || sms.id) return String(sms.db_id || sms.id)
   return [
     sms.device_id || "default",
     sms.storage || "",
@@ -486,20 +511,31 @@ function smsKey(sms: SmsItem) {
   ].join(":")
 }
 
-function isReceivedSms(sms: SmsItem) {
+function smsDirection(sms: SmsItem): "inbound" | "outbound" {
+  if (sms.direction === "outbound") return "outbound"
   const rawState = String(sms.raw_state || "").trim().toUpperCase()
-  if (rawState) return rawState === "REC READ" || rawState === "REC UNREAD"
-  return sms.state === "received"
+  if (rawState === "STO SENT" || rawState === "STO UNSENT") return "outbound"
+  if (sms.state === "sent" || sms.state === "sending" || sms.state === "stored") return "outbound"
+  return "inbound"
 }
 
 function messageTime(timestamp: string) {
   if (!timestamp) return 0
+  const gsmMatch = timestamp.match(/^(\d{2})\/(\d{2})\/(\d{2}),(\d{2}):(\d{2}):(\d{2})([+-]\d{2})?$/)
+  if (gsmMatch) {
+    const [, year, month, day, hour, minute, second, quarterOffset] = gsmMatch
+    const utc = Date.UTC(2000 + Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second))
+    const offsetMinutes = quarterOffset ? Number(quarterOffset) * 15 : 0
+    return utc - offsetMinutes * 60_000
+  }
   const parsed = Date.parse(timestamp.replace(/\//g, "-"))
   return Number.isNaN(parsed) ? 0 : parsed
 }
 
 function shortTime(timestamp: string) {
   if (!timestamp) return "新建"
+  const gsmMatch = timestamp.match(/^\d{2}\/\d{2}\/\d{2},(\d{2}:\d{2})/)
+  if (gsmMatch) return gsmMatch[1]
   const parts = timestamp.split(/\s+/)
   return parts[1]?.slice(0, 5) || parts[0] || "--"
 }

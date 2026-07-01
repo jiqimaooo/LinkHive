@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
-  AlertTriangleIcon,
   BanIcon,
   ChevronRightIcon,
-  Clock3Icon,
   EyeIcon,
-  Globe2Icon,
   LaptopIcon,
   ListIcon,
   LockKeyholeIcon,
@@ -16,7 +13,6 @@ import {
   ShieldCheckIcon,
   ShieldIcon,
   SmartphoneIcon,
-  UserRoundIcon,
   type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -47,7 +43,7 @@ type BanStatus = {
   banned?: Array<{ ip: string; banned_at: number; expires_at: number }>
 }
 
-type LoginDialog = "devices" | "session" | "time" | "ip" | "failures" | null
+type LoginDialog = "devices" | "failures" | null
 
 type SecuritySession = {
   session_id: string
@@ -55,6 +51,7 @@ type SecuritySession = {
   ip: string
   user_agent: string
   device: string
+  location?: string
   login_at: string
   expires_at: number
   current?: boolean
@@ -65,6 +62,7 @@ type LoginFailure = {
   ip: string
   user_agent: string
   device: string
+  location?: string
   time: string
   reason: string
 }
@@ -73,8 +71,8 @@ type SecurityOverview = {
   current_session_id: string
   sessions: SecuritySession[]
   recent_login: Partial<SecuritySession>
-  recent_login_time: string
-  recent_login_ip: string
+  recent_login_time?: string
+  recent_login_ip?: string
   failures: LoginFailure[]
   failure_count: number
   ban_duration_seconds: number
@@ -88,9 +86,6 @@ const LOGIN_ACTIONS: Array<{
   icon: LucideIcon
 }> = [
   { key: "devices", title: "登录设备", description: "当前活跃设备", icon: LaptopIcon },
-  { key: "session", title: "当前会话", description: "当前在线会话", icon: UserRoundIcon },
-  { key: "time", title: "最近登录时间", description: "查看最近登录记录", icon: Clock3Icon },
-  { key: "ip", title: "最近登录 IP", description: "查看最近登录 IP", icon: Globe2Icon },
   { key: "failures", title: "登录失败记录", description: "查看失败记录", icon: ShieldCheckIcon },
 ]
 
@@ -98,18 +93,6 @@ const LOGIN_DIALOG_COPY: Record<Exclude<LoginDialog, null>, { title: string; des
   devices: {
     title: "登录设备",
     description: "查看当前账号关联的登录设备。",
-  },
-  session: {
-    title: "当前会话",
-    description: "查看当前浏览器会话状态。",
-  },
-  time: {
-    title: "最近登录时间",
-    description: "查看账号最近一次成功登录。",
-  },
-  ip: {
-    title: "最近登录 IP",
-    description: "查看账号最近登录来源。",
   },
   failures: {
     title: "登录失败记录",
@@ -360,24 +343,32 @@ export default function SecurityPage() {
         </header>
 
         <SectionCard icon={ShieldCheckIcon} title="登录安全">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {LOGIN_ACTIONS.map((item) => (
-              <button
+              <SecurityActionButton
                 key={item.key}
-                type="button"
+                icon={item.icon}
+                title={item.title}
+                description={item.description}
                 onClick={() => setLoginDialog(item.key)}
-                className="flex h-[92px] min-w-0 items-center gap-3 rounded-xl border border-[#E5E7EB] bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,.05)] transition-colors hover:bg-[#F3F4F6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/25 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-              >
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-blue-50 text-[#2563EB] dark:bg-blue-500/15 dark:text-blue-300">
-                  <item.icon className="size-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold text-slate-950 dark:text-slate-100">{item.title}</span>
-                  <span className="mt-1 block truncate text-[13px] text-[#6B7280] dark:text-slate-400">{item.description}</span>
-                </span>
-                <ChevronRightIcon className="size-4 shrink-0 text-slate-400" />
-              </button>
+              />
             ))}
+            <SecurityActionButton
+              danger
+              icon={LogOutIcon}
+              title="注销所有设备"
+              description="强制所有设备退出登录"
+              onClick={() => setLogoutAllOpen(true)}
+              disabled={logoutAllLoading}
+            />
+            <SecurityActionButton
+              danger
+              icon={ShieldCheckIcon}
+              title="解除全部封禁"
+              description="立即解除所有封禁"
+              onClick={handleClearBans}
+              disabled={unbanLoading === "*"}
+            />
           </div>
         </SectionCard>
 
@@ -488,19 +479,6 @@ export default function SecurityPage() {
           </div>
         </SectionCard>
 
-        <section className="rounded-xl border border-[#FECACA] bg-[#FEF2F2] p-7 shadow-[0_1px_2px_rgba(0,0,0,.05)] dark:border-rose-500/35 dark:bg-rose-950/25">
-          <div className="flex items-start gap-3">
-            <AlertTriangleIcon className="mt-0.5 size-5 text-[#EF4444]" />
-            <div>
-              <h2 className="text-lg font-semibold leading-7 text-[#EF4444]">危险操作</h2>
-              <p className="mt-1 text-[13px] leading-5 text-[#EF4444]">以下操作不可逆，请谨慎操作。</p>
-            </div>
-          </div>
-          <div className="mt-6 grid gap-3 md:grid-cols-2">
-            <DangerButton icon={LogOutIcon} title="注销所有设备" description="强制所有设备退出登录" onClick={() => setLogoutAllOpen(true)} disabled={logoutAllLoading} />
-            <DangerButton icon={ShieldCheckIcon} title="解除全部封禁" description="立即解除所有封禁" onClick={handleClearBans} disabled={unbanLoading === "*"} />
-          </div>
-        </section>
       </div>
 
       <Dialog open={loginDialog !== null} onOpenChange={(open) => !open && setLoginDialog(null)}>
@@ -614,6 +592,49 @@ function SectionCard({ icon: Icon, title, children }: { icon: LucideIcon; title:
   )
 }
 
+function SecurityActionButton({
+  icon: Icon,
+  title,
+  description,
+  onClick,
+  danger = false,
+  disabled = false,
+}: {
+  icon: LucideIcon
+  title: string
+  description: string
+  onClick: () => void
+  danger?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex h-[92px] min-w-0 items-center gap-3 rounded-xl border bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,.05)] transition-colors disabled:cursor-not-allowed disabled:opacity-55",
+        "focus-visible:outline-none focus-visible:ring-2 dark:bg-slate-950",
+        danger
+          ? "border-rose-200 text-[#EF4444] hover:bg-rose-50 focus-visible:ring-rose-500/25 dark:border-rose-500/30 dark:hover:bg-rose-950/25"
+          : "border-[#E5E7EB] hover:bg-[#F3F4F6] focus-visible:ring-[#2563EB]/25 dark:border-slate-800 dark:hover:bg-slate-900",
+      )}
+    >
+      <span className={cn(
+        "flex size-9 shrink-0 items-center justify-center rounded-[10px]",
+        danger ? "bg-rose-50 text-[#EF4444] dark:bg-rose-500/10 dark:text-rose-300" : "bg-blue-50 text-[#2563EB] dark:bg-blue-500/15 dark:text-blue-300",
+      )}>
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={cn("block truncate text-sm font-semibold", danger ? "text-[#EF4444] dark:text-rose-300" : "text-slate-950 dark:text-slate-100")}>{title}</span>
+        <span className={cn("mt-1 block truncate text-[13px]", danger ? "text-rose-500 dark:text-rose-300/80" : "text-[#6B7280] dark:text-slate-400")}>{description}</span>
+      </span>
+      <ChevronRightIcon className={cn("size-4 shrink-0", danger ? "text-rose-300" : "text-slate-400")} />
+    </button>
+  )
+}
+
 function SecurityDialogContent({ dialog, overview, loading }: { dialog: LoginDialog; overview: SecurityOverview | null; loading: boolean }) {
   if (loading) {
     return <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm text-[#6B7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">正在读取安全记录...</div>
@@ -630,7 +651,10 @@ function SecurityDialogContent({ dialog, overview, loading }: { dialog: LoginDia
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate font-medium text-slate-900 dark:text-slate-100">{session.device || "未知设备"}{session.current ? "（当前）" : ""}</div>
-                <div className="mt-1 text-xs text-[#6B7280] dark:text-slate-400">{session.ip || "--"} · {formatSecurityTime(session.login_at) || "登录时间未知"}</div>
+                <div className="mt-2 space-y-1 text-xs leading-5 text-[#6B7280] dark:text-slate-400">
+                  <div>登录 IP：{formatIpWithLocation(session.ip, session.location)}</div>
+                  <div>登录时间：{formatSecurityTime(session.login_at) || "登录时间未知"}</div>
+                </div>
               </div>
               <Badge variant={session.current ? "secondary" : "outline"}>{session.current ? "当前" : "在线"}</Badge>
             </div>
@@ -640,43 +664,16 @@ function SecurityDialogContent({ dialog, overview, loading }: { dialog: LoginDia
     )
   }
 
-  if (dialog === "session") {
-    const current = overview.sessions.find((session) => session.current) ?? overview.sessions[0]
-    return current ? (
-      <SecurityRecord>
-        <DetailLine label="设备" value={current.device || "未知设备"} />
-        <DetailLine label="IP" value={current.ip || "--"} />
-        <DetailLine label="登录时间" value={formatSecurityTime(current.login_at) || "--"} />
-        <DetailLine label="过期时间" value={formatUnixTime(current.expires_at) || "--"} />
-      </SecurityRecord>
-    ) : <EmptySecurityRecord text="暂无当前会话记录。" />
-  }
-
-  if (dialog === "time") {
-    return (
-      <SecurityRecord>
-        <DetailLine label="最近登录时间" value={formatSecurityTime(overview.recent_login_time) || "--"} />
-        <DetailLine label="登录设备" value={overview.recent_login.device || "--"} />
-      </SecurityRecord>
-    )
-  }
-
-  if (dialog === "ip") {
-    return (
-      <SecurityRecord>
-        <DetailLine label="最近登录 IP" value={overview.recent_login_ip || "--"} />
-        <DetailLine label="来源设备" value={overview.recent_login.device || "--"} />
-      </SecurityRecord>
-    )
-  }
-
   if (dialog === "failures") {
     return (
       <div className="space-y-2">
         {overview.failures.length ? overview.failures.map((failure, index) => (
           <SecurityRecord key={`${failure.ip}-${failure.time}-${index}`}>
-            <div className="font-medium text-slate-900 dark:text-slate-100">{failure.ip || "--"}</div>
-            <div className="mt-1 text-xs text-[#6B7280] dark:text-slate-400">{formatSecurityTime(failure.time) || "--"} · {failure.device || "未知设备"}</div>
+            <div className="font-medium text-slate-900 dark:text-slate-100">{failure.device || "未知设备"}</div>
+            <div className="mt-2 space-y-1 text-xs leading-5 text-[#6B7280] dark:text-slate-400">
+              <div>登录 IP：{formatIpWithLocation(failure.ip, failure.location)}</div>
+              <div>登录时间：{formatSecurityTime(failure.time) || "--"}</div>
+            </div>
             <div className="mt-2 text-xs text-rose-600 dark:text-rose-300">{failure.reason || "登录失败"}</div>
           </SecurityRecord>
         )) : <EmptySecurityRecord text="暂无登录失败记录。" />}
@@ -695,15 +692,6 @@ function EmptySecurityRecord({ text }: { text: string }) {
   return <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-sm text-[#6B7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">{text}</div>
 }
 
-function DetailLine({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-4 py-1.5">
-      <span className="text-[#6B7280] dark:text-slate-400">{label}</span>
-      <span className="min-w-0 truncate font-medium text-slate-900 dark:text-slate-100">{value}</span>
-    </div>
-  )
-}
-
 function formatSecurityTime(value?: string) {
   if (!value) return ""
   const parsed = new Date(value)
@@ -711,11 +699,24 @@ function formatSecurityTime(value?: string) {
   return parsed.toLocaleString("zh-CN", { hour12: false })
 }
 
-function formatUnixTime(value?: number) {
-  if (!value) return ""
-  const parsed = new Date(value * 1000)
-  if (Number.isNaN(parsed.getTime())) return ""
-  return parsed.toLocaleString("zh-CN", { hour12: false })
+function formatIpWithLocation(ip?: string, location?: string) {
+  const value = ip || "--"
+  const normalizedLocation = (location || "").trim()
+  if (normalizedLocation) return `${value} · ${normalizedLocation}`
+  if (isPrivateIp(value)) return `${value} · 内网`
+  return `${value} · 位置未知`
+}
+
+function isPrivateIp(ip: string) {
+  return (
+    /^10\./.test(ip) ||
+    /^127\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+    ip === "::1" ||
+    /^fc/i.test(ip) ||
+    /^fd/i.test(ip)
+  )
 }
 
 function PasswordField({ id, label, value, placeholder, onChange }: { id: string; label: string; value: string; placeholder: string; onChange: (value: string) => void }) {
@@ -742,21 +743,8 @@ function SettingRow({ title, description, children }: { title: string; descripti
   )
 }
 
-function DangerButton({ icon: Icon, title, description, onClick, disabled }: { icon: LucideIcon; title: string; description: string; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button type="button" disabled={disabled} onClick={onClick} className="flex min-h-[76px] items-center gap-3 rounded-xl border border-rose-200 bg-white/70 px-4 text-left text-[#EF4444] shadow-[0_1px_2px_rgba(0,0,0,.05)] transition-colors hover:bg-white disabled:opacity-50 dark:border-rose-500/25 dark:bg-rose-950/20 dark:hover:bg-rose-950/35">
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-rose-50 dark:bg-rose-500/10">
-        <Icon className="size-4" />
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-sm font-semibold text-slate-950 dark:text-slate-100">{title}</span>
-        <span className="mt-1 block truncate text-[13px] text-[#6B7280] dark:text-slate-400">{description}</span>
-      </span>
-    </button>
-  )
-}
-
 function getPasswordStrength(password: string) {
+  if (!password) return { score: 0, label: "未输入", barClass: "", textClass: "text-[#6B7280]" }
   let score = 0
   if (password.length >= 8) score += 1
   if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score += 1
@@ -764,7 +752,8 @@ function getPasswordStrength(password: string) {
   if (/[^A-Za-z0-9]/.test(password)) score += 1
   if (password.length >= 12) score += 1
 
-  if (score <= 1) return { score: Math.max(score, 1), label: "弱", barClass: "bg-rose-300", textClass: "text-[#EF4444]" }
-  if (score <= 3) return { score, label: "中", barClass: "bg-amber-400", textClass: "text-[#F59E0B]" }
-  return { score, label: "强", barClass: "bg-[#22C55E]", textClass: "text-[#22C55E]" }
+  if (score <= 1) return { score: Math.max(score, 1), label: "较弱", barClass: "bg-rose-300", textClass: "text-[#EF4444]" }
+  if (score <= 3) return { score, label: "中等", barClass: "bg-amber-400", textClass: "text-[#F59E0B]" }
+  if (score === 4) return { score, label: "强", barClass: "bg-[#22C55E]", textClass: "text-[#22C55E]" }
+  return { score, label: "很强", barClass: "bg-[#16A34A]", textClass: "text-[#16A34A]" }
 }

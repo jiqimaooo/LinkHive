@@ -19,7 +19,7 @@ export type AppContextType = {
   isRefreshing: boolean
   autoRefresh: boolean
   setAutoRefresh: (value: boolean) => void
-  refreshStatus: (silent?: boolean, refreshProfiles?: boolean) => Promise<void>
+  refreshStatus: (silent?: boolean, refreshProfiles?: boolean, refreshSms?: boolean) => Promise<void>
 
   // Actions
   logs: ActionEvent[]

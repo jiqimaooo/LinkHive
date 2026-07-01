@@ -7,10 +7,12 @@ import hmac
 import json
 import mimetypes
 import os
+import platform
 import re
 import select
 import secrets
 import shlex
+import sqlite3
 import subprocess
 import sys
 import termios
@@ -68,6 +70,7 @@ SMS_FORWARDER_SERVICE = "sms-forwarder.service"
 APP_CONFIG_PATH = Path("/etc/linkhive.conf")
 SECURITY_AUDIT_PATH = Path(os.environ.get("LINKHIVE_SECURITY_AUDIT_PATH", "/var/lib/linkhive/security-audit.json"))
 SYSTEM_LOG_PATH = Path(os.environ.get("LINKHIVE_SYSTEM_LOG_PATH", "/var/lib/linkhive/system-events.jsonl"))
+SMS_DATABASE_PATH = Path(os.environ.get("LINKHIVE_SMS_DATABASE_PATH", "/var/lib/linkhive/sms.sqlite"))
 STATIC_DIR = Path(
     os.environ.get("FOURG_WIFI_ADMIN_STATIC_DIR", str(Path(__file__).resolve().with_name("frontend_dist")))
 )
@@ -79,6 +82,7 @@ AUTH_SESSION_TTL_SECONDS = 7 * 24 * 3600
 BEIJING_TZ = timezone(timedelta(hours=8))
 ACTION_RETENTION_SECONDS = 1800
 ACTION_MAX_EVENTS = 400
+APP_STARTED_AT = time.time()
 KEEPALIVE_TASKS_KEY = "KEEPALIVE_TASKS_JSON"
 KEEPALIVE_SETTINGS_KEY = "KEEPALIVE_SETTINGS_JSON"
 KEEPALIVE_ACTION_NAME = "run_keepalive_task"
@@ -191,6 +195,8 @@ SMS_STORAGE_CACHE_SECONDS = 60.0
 SMS_VISIBLE_CACHE_SECONDS = 300.0
 SMS_VISIBLE_CACHE: dict[str, dict[str, Any]] = {}
 SMS_VISIBLE_CACHE_LOCK = threading.Lock()
+SMS_DB_LOCK = threading.Lock()
+SMS_DB_READY = False
 SECURITY_AUDIT_LOCK = threading.Lock()
 SYSTEM_LOG_LOCK = threading.Lock()
 SYSTEM_LOG_LAST_PRUNED_AT = 0.0
@@ -462,6 +468,271 @@ def normalize_sms_text(raw_text: str) -> str:
     return maybe_decode_base64(decode_escaped_text(raw_text))
 
 
+def normalize_sms_number(raw_number: Any) -> str:
+    return re.sub(r"[\s\-()]+", "", str(raw_number or "").strip())
+
+
+def sms_direction_for_state(state: Any, raw_state: Any = "") -> str:
+    normalized = str(state or "").strip().lower()
+    raw = str(raw_state or "").strip().upper()
+    if normalized in {"sent", "sending"} or raw in {"STO SENT", "STO UNSENT"}:
+        return "outbound"
+    return "inbound"
+
+
+def sms_fingerprint(item: dict[str, Any]) -> str:
+    direction = str(item.get("direction") or sms_direction_for_state(item.get("state"), item.get("raw_state"))).strip() or "inbound"
+    payload = [
+        str(item.get("device_id") or "primary").strip(),
+        direction,
+        normalize_sms_number(item.get("number")),
+        str(item.get("timestamp") or "").strip(),
+        normalize_sms_text(str(item.get("text") or "").strip()),
+        str(item.get("state") or "").strip().lower(),
+    ]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def sms_db_connect() -> sqlite3.Connection:
+    SMS_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(SMS_DATABASE_PATH, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def ensure_sms_db() -> None:
+    global SMS_DB_READY
+    if SMS_DB_READY:
+        return
+    with SMS_DB_LOCK:
+        if SMS_DB_READY:
+            return
+        with sms_db_connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sms_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    direction TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    number TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    raw_state TEXT NOT NULL DEFAULT '',
+                    state_label TEXT NOT NULL,
+                    storage TEXT NOT NULL DEFAULT '',
+                    raw_id TEXT NOT NULL DEFAULT '',
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sms_sources (
+                    fingerprint TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    storage TEXT NOT NULL,
+                    raw_id TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (fingerprint, device_id, storage, raw_id)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_messages_visible ON sms_messages(deleted, id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_sources_fingerprint ON sms_sources(fingerprint)")
+        SMS_DB_READY = True
+
+
+def sms_row_to_item(row: sqlite3.Row) -> dict[str, str]:
+    db_id = str(row["id"])
+    storage = str(row["storage"] or "")
+    raw_id = str(row["raw_id"] or "")
+    return {
+        "id": db_id,
+        "db_id": db_id,
+        "fingerprint": str(row["fingerprint"] or ""),
+        "direction": str(row["direction"] or "inbound"),
+        "device_id": str(row["device_id"] or ""),
+        "number": str(row["number"] or ""),
+        "text": str(row["text"] or ""),
+        "timestamp": str(row["timestamp"] or ""),
+        "state": str(row["state"] or ""),
+        "raw_state": str(row["raw_state"] or ""),
+        "state_label": str(row["state_label"] or format_sms_state_label(str(row["state"] or ""))),
+        "storage": storage,
+        "raw_id": raw_id,
+    }
+
+
+def list_stored_sms(device_id: str = "", limit: int = 500) -> list[dict[str, str]]:
+    ensure_sms_db()
+    params: list[Any] = [int(limit)]
+    where = "deleted = 0"
+    if device_id:
+        where += " AND device_id = ?"
+        params.insert(0, device_id)
+    with SMS_DB_LOCK:
+        with sms_db_connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM sms_messages WHERE {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+    return [sms_row_to_item(row) for row in rows]
+
+
+def upsert_stored_sms(messages: list[dict[str, Any]], fallback_device_id: str = "") -> None:
+    if not messages:
+        return
+    ensure_sms_db()
+    now = datetime.now(timezone.utc).isoformat()
+    with SMS_DB_LOCK:
+        with sms_db_connect() as conn:
+            for raw_item in messages:
+                text = normalize_sms_text(str(raw_item.get("text") or "").strip())
+                number = normalize_sms_text(str(raw_item.get("number") or "").strip())
+                device_id = str(raw_item.get("device_id") or fallback_device_id or "primary").strip()
+                state = str(raw_item.get("state") or "").strip().lower() or "received"
+                raw_state = str(raw_item.get("raw_state") or "").strip()
+                direction = str(raw_item.get("direction") or sms_direction_for_state(state, raw_state)).strip() or "inbound"
+                state_label = str(raw_item.get("state_label") or format_sms_state_label(state)).strip()
+                timestamp = str(raw_item.get("timestamp") or "").strip()
+                storage = str(raw_item.get("storage") or "").strip().upper()
+                raw_id = str(raw_item.get("raw_id") or raw_item.get("id") or "").strip()
+                item = {
+                    "device_id": device_id,
+                    "direction": direction,
+                    "number": number,
+                    "text": text,
+                    "timestamp": timestamp,
+                    "state": state,
+                    "raw_state": raw_state,
+                }
+                fingerprint = str(raw_item.get("fingerprint") or sms_fingerprint(item))
+                conn.execute(
+                    """
+                    INSERT INTO sms_messages (
+                        fingerprint, direction, device_id, number, text, timestamp, state, raw_state,
+                        state_label, storage, raw_id, deleted, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    ON CONFLICT(fingerprint) DO UPDATE SET
+                        direction = excluded.direction,
+                        device_id = excluded.device_id,
+                        number = excluded.number,
+                        text = excluded.text,
+                        timestamp = excluded.timestamp,
+                        state = excluded.state,
+                        raw_state = excluded.raw_state,
+                        state_label = excluded.state_label,
+                        storage = CASE WHEN excluded.storage != '' THEN excluded.storage ELSE sms_messages.storage END,
+                        raw_id = CASE WHEN excluded.raw_id != '' THEN excluded.raw_id ELSE sms_messages.raw_id END,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (
+                        fingerprint,
+                        direction,
+                        device_id,
+                        number,
+                        text,
+                        timestamp,
+                        state,
+                        raw_state,
+                        state_label,
+                        storage,
+                        raw_id,
+                        now,
+                        now,
+                    ),
+                )
+                if storage and raw_id:
+                    conn.execute(
+                        """
+                        INSERT INTO sms_sources (fingerprint, device_id, storage, raw_id, first_seen_at, last_seen_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(fingerprint, device_id, storage, raw_id) DO UPDATE SET
+                            last_seen_at = excluded.last_seen_at
+                        """,
+                        (fingerprint, device_id, storage, raw_id, now, now),
+                    )
+
+
+def store_outgoing_sms(device_id: str, number: str, text: str) -> None:
+    timestamp = datetime.now(BEIJING_TZ).isoformat(timespec="microseconds")
+    upsert_stored_sms(
+        [
+            {
+                "device_id": device_id or "primary",
+                "direction": "outbound",
+                "number": number,
+                "text": text,
+                "timestamp": timestamp,
+                "state": "sent",
+                "raw_state": "STO SENT",
+                "state_label": "已发送",
+            }
+        ],
+        fallback_device_id=device_id or "primary",
+    )
+
+
+def sms_delete_target(payload: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    ensure_sms_db()
+    db_id = str(payload.get("db_id") or payload.get("id") or "").strip()
+    fingerprint = str(payload.get("fingerprint") or "").strip()
+    storage = str(payload.get("storage") or "").strip().upper()
+    raw_id = str(payload.get("raw_id") or "").strip()
+    device_id = str(payload.get("device_id") or "").strip()
+    with SMS_DB_LOCK:
+        with sms_db_connect() as conn:
+            row: Optional[sqlite3.Row] = None
+            if db_id and re.fullmatch(r"\d+", db_id):
+                row = conn.execute("SELECT * FROM sms_messages WHERE id = ?", (int(db_id),)).fetchone()
+            if row is None and fingerprint:
+                row = conn.execute("SELECT * FROM sms_messages WHERE fingerprint = ?", (fingerprint,)).fetchone()
+            if row is not None:
+                fingerprint = str(row["fingerprint"])
+            sources: list[dict[str, str]] = []
+            if fingerprint:
+                source_rows = conn.execute(
+                    "SELECT device_id, storage, raw_id FROM sms_sources WHERE fingerprint = ?",
+                    (fingerprint,),
+                ).fetchall()
+                sources = [
+                    {
+                        "device_id": str(source["device_id"] or ""),
+                        "storage": str(source["storage"] or ""),
+                        "raw_id": str(source["raw_id"] or ""),
+                    }
+                    for source in source_rows
+                ]
+                if not sources and row is not None and row["storage"] and row["raw_id"]:
+                    sources = [{"device_id": str(row["device_id"] or ""), "storage": str(row["storage"] or ""), "raw_id": str(row["raw_id"] or "")}]
+            if not fingerprint and storage and raw_id:
+                source = conn.execute(
+                    "SELECT fingerprint FROM sms_sources WHERE device_id = ? AND storage = ? AND raw_id = ? ORDER BY last_seen_at DESC LIMIT 1",
+                    (device_id, storage, raw_id),
+                ).fetchone()
+                if source:
+                    fingerprint = str(source["fingerprint"])
+            if storage and raw_id and not any(item["storage"] == storage and item["raw_id"] == raw_id for item in sources):
+                sources.append({"device_id": device_id, "storage": storage, "raw_id": raw_id})
+    return fingerprint, sources
+
+
+def mark_stored_sms_deleted(fingerprint: str = "", db_id: str = "") -> None:
+    ensure_sms_db()
+    with SMS_DB_LOCK:
+        with sms_db_connect() as conn:
+            if fingerprint:
+                conn.execute("UPDATE sms_messages SET deleted = 1 WHERE fingerprint = ?", (fingerprint,))
+            elif db_id and re.fullmatch(r"\d+", db_id):
+                conn.execute("UPDATE sms_messages SET deleted = 1 WHERE id = ?", (int(db_id),))
+
+
 def format_beijing_timestamp(raw_timestamp: str) -> str:
     if not raw_timestamp:
         return "未知时间"
@@ -486,6 +757,9 @@ def format_sms_state_label(state: str) -> str:
 
 
 def sms_sort_id(item: dict[str, Any]) -> int:
+    db_id = str(item.get("db_id") or "")
+    if re.fullmatch(r"\d+", db_id):
+        return int(db_id)
     raw_id = str(item.get("raw_id") or item.get("id") or "")
     match = re.search(r"\d+", raw_id)
     return int(match.group(0)) if match else 0
@@ -697,6 +971,84 @@ def _is_lan_ip(ip: str) -> bool:
         return False
 
 
+def normalize_client_ip(raw_value: Any) -> str:
+    value = str(raw_value or "").strip().strip('"')
+    if not value or value.lower() == "unknown" or value.startswith("_"):
+        return ""
+    if value.startswith("[") and "]" in value:
+        value = value[1:value.index("]")]
+    elif value.count(":") == 1 and "." in value:
+        value = value.rsplit(":", 1)[0]
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return ""
+
+
+def forwarded_header_ips(raw_value: str) -> list[str]:
+    result: list[str] = []
+    for item in str(raw_value or "").split(","):
+        for part in item.split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key.strip().lower() != "for":
+                continue
+            normalized = normalize_client_ip(value)
+            if normalized:
+                result.append(normalized)
+    return result
+
+
+def client_ip_from_proxy_headers(headers: Any, fallback_ip: str) -> str:
+    fallback = normalize_client_ip(fallback_ip) or str(fallback_ip or "")
+    if not config_flag("LINKHIVE_TRUST_PROXY_HEADERS"):
+        return fallback
+    for candidate in forwarded_header_ips(headers.get("Forwarded", "")):
+        return candidate
+    for raw_value in (headers.get("X-Forwarded-For", ""), headers.get("X-Real-IP", "")):
+        for part in str(raw_value or "").split(","):
+            normalized = normalize_client_ip(part)
+            if normalized:
+                return normalized
+    return fallback
+
+
+def _decode_header_value(raw_value: Any) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+    try:
+        return unquote(value)
+    except Exception:
+        return value
+
+
+def client_location_from_proxy_headers(headers: Any) -> str:
+    if not config_flag("LINKHIVE_TRUST_PROXY_HEADERS"):
+        return ""
+    city = ""
+    region = ""
+    country = ""
+    for key in ("CF-IPCity", "X-GeoIP-City", "X-Geo-City", "X-Client-City", "X-Forwarded-City"):
+        city = _decode_header_value(headers.get(key, ""))
+        if city:
+            break
+    for key in ("CF-IPRegion", "X-GeoIP-Region", "X-Geo-Region", "X-Client-Region", "X-Forwarded-Region"):
+        region = _decode_header_value(headers.get(key, ""))
+        if region:
+            break
+    for key in ("CF-IPCountry", "X-GeoIP-Country", "X-Geo-Country", "X-Client-Country", "X-Forwarded-Country"):
+        country = _decode_header_value(headers.get(key, ""))
+        if country:
+            break
+    parts = []
+    for value in (country, region, city):
+        if value and value not in parts:
+            parts.append(value)
+    return " ".join(parts)
+
+
 def brute_force_enabled() -> bool:
     config = read_env_config(APP_CONFIG_PATH)
     return config.get("LINKHIVE_BRUTE_FORCE_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
@@ -845,6 +1197,32 @@ def iso_now() -> str:
     return datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
 
 
+def format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days} 天 {hours} 小时"
+    if hours:
+        return f"{hours} 小时 {minutes} 分钟"
+    if minutes:
+        return f"{minutes} 分钟 {secs} 秒"
+    return f"{secs} 秒"
+
+
+def system_snapshot() -> dict[str, Any]:
+    started_at = datetime.fromtimestamp(APP_STARTED_AT, BEIJING_TZ)
+    return {
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "started_at_label": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+        "uptime_seconds": max(0, int(time.time() - APP_STARTED_AT)),
+        "uptime": format_duration(time.time() - APP_STARTED_AT),
+        "cpu_architecture": platform.machine() or "--",
+        "platform": platform.platform(),
+    }
+
+
 def prune_security_audit(data: dict[str, Any]) -> dict[str, Any]:
     now = time.time()
     sessions = []
@@ -863,13 +1241,14 @@ def prune_security_audit(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def record_login_success(username: str, ip: str, user_agent: str, session_id: str, expires_at: int) -> None:
+def record_login_success(username: str, ip: str, user_agent: str, session_id: str, expires_at: int, location: str = "") -> None:
     with SECURITY_AUDIT_LOCK:
         data = prune_security_audit(read_security_audit())
         item = {
             "session_id": session_id,
             "username": username,
             "ip": ip,
+            "location": location,
             "user_agent": user_agent,
             "device": user_agent_label(user_agent),
             "login_at": iso_now(),
@@ -881,12 +1260,13 @@ def record_login_success(username: str, ip: str, user_agent: str, session_id: st
         write_security_audit(prune_security_audit(data))
 
 
-def record_login_failure(username: str, ip: str, user_agent: str, reason: str) -> None:
+def record_login_failure(username: str, ip: str, user_agent: str, reason: str, location: str = "") -> None:
     with SECURITY_AUDIT_LOCK:
         data = prune_security_audit(read_security_audit())
         data["failures"].append({
             "username": username,
             "ip": ip,
+            "location": location,
             "user_agent": user_agent,
             "device": user_agent_label(user_agent),
             "time": iso_now(),
@@ -902,12 +1282,12 @@ def clear_security_sessions() -> None:
         write_security_audit(data)
 
 
-def make_session_cookie(username: str, ip: str = "", user_agent: str = "") -> str:
+def make_session_cookie(username: str, ip: str = "", user_agent: str = "", location: str = "") -> str:
     expires_at = int(time.time()) + AUTH_SESSION_TTL_SECONDS
     session_version = auth_session_version()
     session_id = secrets.token_urlsafe(12)
     signature = sign_session(username, expires_at, session_version, session_id)
-    record_login_success(username, ip, user_agent, session_id, expires_at)
+    record_login_success(username, ip, user_agent, session_id, expires_at, location)
     return f"{username}:{expires_at}:{session_version}:{session_id}:{signature}"
 
 
@@ -952,11 +1332,33 @@ def session_id_from_cookie(raw_cookie: str) -> str:
     return parts[3] if len(parts) == 5 else ""
 
 
-def security_overview_payload(raw_cookie: str, client_ip: str, user_agent: str) -> dict[str, Any]:
+def refresh_security_session_client(data: dict[str, Any], session_id: str, client_ip: str, user_agent: str, location: str = "") -> bool:
+    if not session_id or not client_ip:
+        return False
+    changed = False
+    for key in ("sessions", "logins"):
+        for item in data.get(key, []):
+            if not isinstance(item, dict) or item.get("session_id") != session_id:
+                continue
+            if item.get("ip") != client_ip:
+                item["ip"] = client_ip
+                changed = True
+            if location and item.get("location") != location:
+                item["location"] = location
+                changed = True
+            if user_agent and item.get("user_agent") != user_agent:
+                item["user_agent"] = user_agent
+                item["device"] = user_agent_label(user_agent)
+                changed = True
+    return changed
+
+
+def security_overview_payload(raw_cookie: str, client_ip: str, user_agent: str, location: str = "") -> dict[str, Any]:
+    current_session_id = session_id_from_cookie(raw_cookie)
     with SECURITY_AUDIT_LOCK:
         data = prune_security_audit(read_security_audit())
+        refresh_security_session_client(data, current_session_id, client_ip, user_agent, location)
         write_security_audit(data)
-    current_session_id = session_id_from_cookie(raw_cookie)
     sessions = data.get("sessions", [])
     current = next((item for item in sessions if item.get("session_id") == current_session_id), None)
     if not current:
@@ -964,6 +1366,7 @@ def security_overview_payload(raw_cookie: str, client_ip: str, user_agent: str) 
             "session_id": current_session_id or "legacy-current",
             "username": auth_username(),
             "ip": client_ip,
+            "location": location,
             "user_agent": user_agent,
             "device": user_agent_label(user_agent),
             "login_at": "",
@@ -2096,9 +2499,19 @@ def cached_ims_status(modem: dict[str, str], modem_error: Optional[str]) -> dict
     )
 
 
-def cached_list_sms(device_id: str) -> tuple[list[dict[str, str]], Optional[str]]:
+def cached_list_sms(device_id: str, force_refresh: bool = False) -> tuple[list[dict[str, str]], Optional[str]]:
+    cache_key = f"sms-list:{device_id or 'primary'}"
+    if force_refresh:
+        value = list_sms(device_id)
+        with SLOW_PROBE_CACHE_LOCK:
+            SLOW_PROBE_CACHE[cache_key] = {
+                "updated_at": time.time(),
+                "value": clone_cached_value(value),
+                "running": False,
+            }
+        return value
     return cached_slow_probe(
-        f"sms-list:{device_id or 'primary'}",
+        cache_key,
         SMS_LIST_CACHE_SECONDS,
         ([], None),
         lambda: list_sms(device_id),
@@ -2131,15 +2544,19 @@ def last_visible_sms(device_id: str) -> list[dict[str, str]]:
         return clone_cached_value(entry.get("messages", []))
 
 
-def stable_cached_list_sms(device_id: str) -> tuple[list[dict[str, str]], Optional[str]]:
-    messages, error = cached_list_sms(device_id)
+def stable_cached_list_sms(device_id: str, force_refresh: bool = False) -> tuple[list[dict[str, str]], Optional[str]]:
+    messages, error = cached_list_sms(device_id, force_refresh=force_refresh)
     if messages:
-        remember_visible_sms(device_id, messages)
-        return messages, error
+        upsert_stored_sms(messages, fallback_device_id=device_id)
+    stored = list_stored_sms(device_id)
+    if stored:
+        return stored, None if error and is_transient_modem_error(error) else error
     fallback = last_visible_sms(device_id)
     if fallback and error and is_transient_modem_error(error):
-        return fallback, None
-    return messages, error
+        upsert_stored_sms(fallback, fallback_device_id=device_id)
+        stored = list_stored_sms(device_id)
+        return stored or fallback, None
+    return stored, error
 
 
 def clear_sms_caches(device_id: str = "") -> None:
@@ -2582,24 +2999,31 @@ def send_sms_message(
         send_sms_via_at(number, text, device_id)
     except Exception as exc:
         raise RuntimeError(f"{failure_prefix}{exc}") from exc
+    store_outgoing_sms(device_id, number, text)
+    clear_sms_caches(device_id)
     ctx.log(success_message)
 
 
 def delete_sms_message(ctx: ActionContext, payload: dict[str, Any]) -> None:
-    device_id = str(payload.get("device_id", "")).strip()
-    storage = str(payload.get("storage", "")).strip().upper()
-    raw_id = str(payload.get("raw_id", payload.get("id", ""))).strip()
     number = str(payload.get("number", "")).strip()
-    if storage not in {"ME", "SM"}:
-        raise ValueError("缺少有效的短信存储位置")
-    if not re.fullmatch(r"\d+", raw_id):
-        raise ValueError("缺少有效的短信 ID")
-    ctx.log(f"删除短信：{storage}/{raw_id}{f'（{number}）' if number else ''}")
-    try:
-        delete_sms_via_at(device_id, storage, raw_id)
-    except Exception as exc:
-        raise RuntimeError(f"删除短信失败：{exc}") from exc
-    clear_sms_caches(device_id)
+    db_id = str(payload.get("db_id") or payload.get("id") or "").strip()
+    fingerprint, sources = sms_delete_target(payload)
+    if not fingerprint and not (db_id and re.fullmatch(r"\d+", db_id)):
+        raise ValueError("缺少有效的短信记录")
+    ctx.log(f"删除短信{f'（{number}）' if number else ''}")
+    for source in sources:
+        storage = str(source.get("storage") or "").strip().upper()
+        raw_id = str(source.get("raw_id") or "").strip()
+        device_id = str(source.get("device_id") or payload.get("device_id") or "").strip()
+        if storage not in {"ME", "SM"} or not re.fullmatch(r"\d+", raw_id):
+            continue
+        try:
+            delete_sms_via_at(device_id, storage, raw_id)
+            ctx.log(f"已从设备存储删除：{storage}/{raw_id}")
+        except Exception as exc:
+            ctx.log(f"设备存储删除失败，已保留本地删除状态：{storage}/{raw_id}：{exc}", "warning")
+    mark_stored_sms_deleted(fingerprint=fingerprint, db_id=db_id)
+    clear_sms_caches(str(payload.get("device_id") or ""))
     ctx.log("短信已删除")
 
 
@@ -2677,7 +3101,7 @@ def notify_keepalive_result(
         ctx.log(f"保活结果通知发送失败：{exc}", "warning")
 
 
-def get_status(refresh_profiles: bool = False, refresh_devices: bool = False) -> dict[str, Any]:
+def get_status(refresh_profiles: bool = False, refresh_devices: bool = False, refresh_sms: bool = False) -> dict[str, Any]:
     global PROFILE_CACHE_ERROR
     status_message = ""
     errors: list[str] = []
@@ -2766,18 +3190,20 @@ def get_status(refresh_profiles: bool = False, refresh_devices: bool = False) ->
         for device in devices:
             device_id = str(device.get("id", ""))
             if not device_ready_for_sms_read(device):
-                sms_messages.extend(last_visible_sms(device_id))
+                sms_messages.extend(list_stored_sms(device_id))
                 continue
-            device_messages, sms_error = stable_cached_list_sms(device_id)
+            device_messages, sms_error = stable_cached_list_sms(device_id, force_refresh=refresh_sms)
             if sms_error:
                 if not is_transient_modem_error(sms_error):
                     sms_errors.append(f"{device.get('label') or device.get('id')}：{sms_error}")
                 continue
             sms_messages.extend(device_messages)
     elif not modem_error:
-        sms_messages, sms_error = stable_cached_list_sms("")
+        sms_messages, sms_error = stable_cached_list_sms("", force_refresh=refresh_sms)
         if sms_error and not is_transient_modem_error(sms_error):
             sms_errors.append(sms_error)
+    else:
+        sms_messages = list_stored_sms("")
     if sms_errors:
         if not status_message:
             status_message = "暂时拿不到部分短信列表，可能是基带还在重新注册。"
@@ -2858,6 +3284,7 @@ def get_status(refresh_profiles: bool = False, refresh_devices: bool = False) ->
         },
         "keepalive": keepalive,
         "sms": sms_messages,
+        "system": system_snapshot(),
         "timestamp": format_beijing_timestamp(datetime.now(timezone.utc).isoformat()),
     }
 
@@ -3987,10 +4414,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._write_json(500, {"error": str(exc)})
 
     def _client_ip(self) -> str:
-        forwarded = self.headers.get("X-Forwarded-For", "")
-        if config_flag("LINKHIVE_TRUST_PROXY_HEADERS") and forwarded:
-            return forwarded.split(",")[0].strip()
-        return self.client_address[0]
+        return client_ip_from_proxy_headers(self.headers, self.client_address[0])
+
+    def _client_location(self) -> str:
+        return client_location_from_proxy_headers(self.headers)
 
     def _origin_allowed(self) -> bool:
         origin = self.headers.get("Origin", "").strip()
@@ -4079,7 +4506,15 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/security-overview":
             if not self._require_auth():
                 return
-            self._write_json(200, security_overview_payload(self.headers.get("Cookie", ""), self._client_ip(), self.headers.get("User-Agent", "")))
+            self._write_json(
+                200,
+                security_overview_payload(
+                    self.headers.get("Cookie", ""),
+                    self._client_ip(),
+                    self.headers.get("User-Agent", ""),
+                    self._client_location(),
+                ),
+            )
             return
 
         if path.startswith("/api/") and not self._require_auth():
@@ -4089,7 +4524,8 @@ class AppHandler(BaseHTTPRequestHandler):
             try:
                 refresh_profiles = "refresh_profiles=1" in parsed.query
                 refresh_devices = "refresh_devices=1" in parsed.query
-                self._write_json(200, get_status(refresh_profiles=refresh_profiles, refresh_devices=refresh_devices))
+                refresh_sms = "refresh_sms=1" in parsed.query
+                self._write_json(200, get_status(refresh_profiles=refresh_profiles, refresh_devices=refresh_devices, refresh_sms=refresh_sms))
             except Exception as exc:
                 record_system_log("api", "error", f"状态读取失败：{exc}")
                 self._write_json(500, {"error": str(exc)})
@@ -4128,6 +4564,7 @@ class AppHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             if path == "/api/auth/login":
                 client_ip = self._client_ip()
+                client_location = self._client_location()
                 if is_ip_banned(client_ip):
                     self._write_json(403, {"error": "IP 已被封禁，请稍后再试"})
                     return
@@ -4139,7 +4576,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
                 if username != auth_username() or not verify_password(password):
                     record_failed_attempt(client_ip)
-                    record_login_failure(username, client_ip, self.headers.get("User-Agent", ""), "用户名或密码不正确")
+                    record_login_failure(username, client_ip, self.headers.get("User-Agent", ""), "用户名或密码不正确", client_location)
                     self._write_json(401, {"error": "用户名或密码不正确", "authenticated": False})
                     return
                 if totp_enabled() and not totp_code_value:
@@ -4148,10 +4585,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 if totp_enabled():
                     if not verify_totp(totp_secret(), totp_code_value):
                         record_failed_attempt(client_ip)
-                        record_login_failure(username, client_ip, self.headers.get("User-Agent", ""), "二次认证验证码不正确")
+                        record_login_failure(username, client_ip, self.headers.get("User-Agent", ""), "二次认证验证码不正确", client_location)
                         self._write_json(401, {"error": "二次认证验证码不正确"})
                         return
-                cookie_value = make_session_cookie(username, client_ip, self.headers.get("User-Agent", ""))
+                cookie_value = make_session_cookie(username, client_ip, self.headers.get("User-Agent", ""), client_location)
                 self._write_json(
                     200,
                     {"ok": True, "authenticated": True, "username": username},

@@ -162,101 +162,14 @@ gh release create lpac-assets \
 
 这样每次 `main` 自动生成新的 LinkHive Release 时，不需要重复上传 lpac。安装脚本会先查最新 Release，找不到时自动回退到 `lpac-assets` Release。
 
-## 配置文件
+## 安全建议
 
-主配置文件：
-
-```text
-/etc/linkhive.conf
-```
-
-常见字段：
-
-```env
-SIM_TYPE=esim
-ESIM_MANAGEMENT_ENABLED=1
-LINKHIVE_AUTH_ENABLED=1
-LINKHIVE_ADMIN_USER=admin
-LINKHIVE_PASSWORD_HASH=pbkdf2_sha256$...
-LINKHIVE_SESSION_SECRET=...
-LINKHIVE_AUTH_SESSION_VERSION=0
-LINKHIVE_TOTP_ENABLED=false
-LINKHIVE_TOTP_SECRET=
-LINKHIVE_BRUTE_FORCE_ENABLED=1
-LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS=5
-LINKHIVE_BRUTE_FORCE_LAN_ENABLED=1
-LINKHIVE_BRUTE_FORCE_BAN_DURATION_SECONDS=1800
-LINKHIVE_BRUTE_FORCE_BANNED_IPS={}
-LINKHIVE_SYSTEM_LOG_ENABLED=false
-LINKHIVE_SYSTEM_LOG_RETENTION_DAYS=7
-LINKHIVE_TRUST_PROXY_HEADERS=0
-LINKHIVE_COOKIE_SECURE=0
-KEEPALIVE_SETTINGS_JSON={}
-KEEPALIVE_TASKS_JSON=[]
-PROFILE_SMSC_CONFIG_JSON={}
-```
-
-说明：
-
-- `SIM_TYPE` 取值为 `physical` 或 `esim`。
-- `ESIM_MANAGEMENT_ENABLED=1` 时才会读取 eSIM Profile 和执行切卡/写卡相关操作。
-- `LINKHIVE_SYSTEM_LOG_ENABLED=true` 后，系统事件写入 `/var/lib/linkhive/system-events.jsonl`，并按 `LINKHIVE_SYSTEM_LOG_RETENTION_DAYS` 自动裁剪。
-- `KEEPALIVE_*_JSON` 由“定时任务”页面维护，通常不需要手工编辑。
-- `PROFILE_SMSC_CONFIG_JSON` 由 eSIM Profile 的短信中心配置维护。
-
-通知配置文件：
-
-```text
-/etc/sms-forwarder.conf
-```
-
-通知渠道通过 Apprise URL 配置，示例可参考：
-
-```text
-deploy/sms_forwarder/sms-forwarder.conf.example
-```
-
-核心字段：
-
-```env
-MODEM_ID=any
-NOTIFICATION_TARGETS_JSON=[]
-FORWARD_SMS_STATES=received
-```
-
-`NOTIFICATION_TARGETS_JSON` 由“通知转发”页面维护。当前页面支持 Bark、Telegram、Gotify、ntfy、Discord 和自定义 Apprise URL。
-
-## 日志
-
-顶部导航右侧的日志按钮会打开日志弹窗：
-
-- 操作日志：前端内存中的实时任务执行日志，刷新页面后只会恢复仍在执行的任务追踪。
-- 系统日志：需要手动开启，开启后会记录后台关键事件和 action 执行事件。
-
-系统日志默认文件：
-
-```text
-/var/lib/linkhive/system-events.jsonl
-```
-
-系统日志可以在弹窗中清空，也可以设置保留天数，避免长期运行后占用过多空间。底层 systemd 日志仍通过 `journalctl` 查看。
-
-## 反向代理与安全建议
-
-如果 LinkHive 放在 HTTPS 反向代理后面，并且代理会正确覆盖 `X-Forwarded-*` 请求头，可以开启：
-
-```env
-LINKHIVE_TRUST_PROXY_HEADERS=1
-LINKHIVE_COOKIE_SECURE=1
-```
-
-安全建议：
-
-- 不要直接暴露到公网。
+- 为了您的数据安全，推荐将 LinkHive 私有化部署在可信设备或内网环境中，仅通过内网、VPN 或受控反向代理访问。
+- LinkHive 不提供、也不会接入任何官方在线云服务；短信内容、SIM/eSIM 信息、通知渠道密钥、登录凭据和运行日志均由部署者自行保存和管理。
+- 项目的开源代码不负责托管、备份、同步或保护您的业务数据。数据安全、网络访问控制、系统加固、密钥保管、备份恢复和合规使用均由部署和使用者自行负责。
+- 不要直接暴露到公网；如确需公网访问，请配置可信反向代理或 VPN 入口，并开启 TOTP 等二次验证措施。
 - 首次部署后修改默认密码。
 - 需要二次认证时，在安全中心启用 TOTP；如果丢失验证器，可在 `/etc/linkhive.conf` 中设置 `LINKHIVE_TOTP_ENABLED=false` 后重启服务。
-- 使用 HTTPS 反向代理时开启 `LINKHIVE_COOKIE_SECURE=1`。
-- 只有在可信反向代理后面才开启 `LINKHIVE_TRUST_PROXY_HEADERS=1`。
 - 不要把 `/etc/linkhive.conf`、`/etc/sms-forwarder.conf` 或任何包含 token/password 的文件提交到 Git。
   
 ## 已知限制

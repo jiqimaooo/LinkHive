@@ -49,12 +49,10 @@ export default function AboutPage() {
   const { status, currentSimType } = useAppContext()
   const [currentVersion, setCurrentVersion] = useState("V1.0-20250621")
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
-  const [latestUrl, setLatestUrl] = useState(RELEASES_URL)
   const [checking, setChecking] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
   const [updateState, setUpdateState] = useState<UpdateState>("idle")
-  const [lastCheckedAt, setLastCheckedAt] = useState("")
 
   useEffect(() => {
     fetch("/api/auth/status")
@@ -66,6 +64,9 @@ export default function AboutPage() {
   }, [])
 
   const displayedLatestVersion = latestVersion || (updateState === "latest" ? currentVersion : "--")
+  const updateButtonLabel = updating ? `安装中 ${progress}%` : latestVersion ? "安装更新" : checking ? "检查中..." : "检查更新"
+  const updateButtonIcon = latestVersion ? DownloadIcon : RefreshCwIcon
+  const UpdateButtonIcon = updateButtonIcon
 
   const systemRows = useMemo(
     () => [
@@ -74,13 +75,13 @@ export default function AboutPage() {
       { icon: Layers3Icon, title: "系统架构", value: "前后端分离" },
       { icon: LanguagesIcon, title: "语言", value: "简体中文" },
       { icon: DatabaseIcon, title: "数据库", value: "SQLite" },
-      { icon: RocketIcon, title: "启动时间", value: "--" },
-      { icon: TimerIcon, title: "运行时长", value: "--" },
+      { icon: RocketIcon, title: "启动时间", value: status?.system?.started_at_label || "--" },
+      { icon: TimerIcon, title: "运行时长", value: status?.system?.uptime || "--" },
       { icon: BadgeCheckIcon, title: "版本号", value: currentVersion },
-      { icon: CpuIcon, title: "CPU 架构", value: "--" },
+      { icon: CpuIcon, title: "CPU 架构", value: status?.system?.cpu_architecture || "--" },
       { icon: HardDriveIcon, title: "SIM 模式", value: currentSimType === "physical" ? "实体 SIM" : "eSIM" },
     ],
-    [currentSimType, currentVersion],
+    [currentSimType, currentVersion, status?.system?.cpu_architecture, status?.system?.started_at_label, status?.system?.uptime],
   )
 
   const handleCheckUpdate = async () => {
@@ -90,8 +91,6 @@ export default function AboutPage() {
       if (!response.ok) throw new Error("检查失败")
       const data = (await response.json()) as LatestRelease
       const nextVersion = data.tag_name || currentVersion
-      setLatestUrl(data.html_url || RELEASES_URL)
-      setLastCheckedAt(new Date().toLocaleString("zh-CN", { hour12: false }))
       if (nextVersion !== currentVersion) {
         setLatestVersion(nextVersion)
         setUpdateState("available")
@@ -192,84 +191,60 @@ export default function AboutPage() {
               </div>
             </div>
 
-            <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 shadow-[0_1px_2px_rgba(0,0,0,.05)] dark:border-slate-800 dark:bg-slate-900">
-              <VersionLine label="当前版本" value={currentVersion} />
-              <div className="my-3 h-px bg-[#E5E7EB] dark:bg-slate-800" />
-              <VersionLine label="最新版本" value={displayedLatestVersion} />
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleCheckUpdate}
-                disabled={checking || updating}
-                className="mt-4 h-[38px] w-full rounded-[10px] border-[#E5E7EB] bg-white text-sm hover:bg-[#F3F4F6] dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900"
-              >
-                <RefreshCwIcon className={cn("size-4", checking && "animate-spin")} />
-                {checking ? "检查中..." : "检查更新"}
-              </Button>
-            </div>
+	            <div className="rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 shadow-[0_1px_2px_rgba(0,0,0,.05)] dark:border-slate-800 dark:bg-slate-900">
+	              <VersionLine label="当前版本" value={currentVersion} />
+	              <div className="my-3 h-px bg-[#E5E7EB] dark:bg-slate-800" />
+	              <VersionLine label="最新版本" value={displayedLatestVersion} />
+	              <div className="mt-3 flex items-center justify-between gap-3">
+	                <span className="text-[13px] text-[#6B7280] dark:text-slate-400">更新状态</span>
+	                <UpdateBadge state={updateState} />
+	              </div>
+	              {updating ? (
+	                <div className="mt-4">
+	                  <div className="flex items-center justify-between text-xs">
+	                    <span className="font-medium text-slate-900 dark:text-slate-100">正在安装 {latestVersion}</span>
+	                    <span className="text-[#6B7280] dark:text-slate-400">{progress}%</span>
+	                  </div>
+	                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+	                    <div className="h-full rounded-full bg-[#2563EB] transition-all duration-200 ease-out" style={{ width: `${progress}%` }} />
+	                  </div>
+	                </div>
+	              ) : null}
+	              <Button
+	                type="button"
+	                variant={latestVersion ? "default" : "outline"}
+	                onClick={latestVersion ? handleUpdate : handleCheckUpdate}
+	                disabled={checking || updating}
+	                className={cn(
+	                  "mt-4 h-[38px] w-full rounded-[10px] text-sm",
+	                  latestVersion
+	                    ? "bg-[#2563EB] text-white hover:bg-blue-700"
+	                    : "border-[#E5E7EB] bg-white hover:bg-[#F3F4F6] dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900",
+	                )}
+	              >
+	                <UpdateButtonIcon className={cn("size-4", (checking || updating) && "animate-spin")} />
+	                {updateButtonLabel}
+	              </Button>
+	            </div>
           </div>
         </section>
 
-      <SectionCard icon={RefreshCwIcon} title="版本信息">
-        <div className="divide-y divide-[#E5E7EB] dark:divide-slate-800">
-          <InfoRow title="当前版本" value={currentVersion} />
-          <InfoRow title="最新版本" value={displayedLatestVersion} />
-          <InfoRow title="更新状态" value={<UpdateBadge state={updateState} />} />
-          <InfoRow title="最后检查时间" value={lastCheckedAt || "--"} />
-        </div>
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          {updating ? (
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-medium text-slate-900 dark:text-slate-100">正在安装 {latestVersion}</span>
-                <span className="text-[#6B7280] dark:text-slate-400">{progress}%</span>
-              </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                <div className="h-full rounded-full bg-[#2563EB] transition-all duration-200 ease-out" style={{ width: `${progress}%` }} />
-              </div>
-            </div>
-          ) : (
-            <a
-              href={latestUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-[38px] items-center gap-2 rounded-[10px] border border-[#E5E7EB] bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-[#F3F4F6] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900"
-            >
-              <ExternalLinkIcon className="size-4" />
-              Release 页面
-            </a>
-          )}
-          <div className="flex justify-end gap-3">
-            {latestVersion ? (
-              <Button type="button" onClick={handleUpdate} disabled={updating} className="h-[38px] rounded-[10px] bg-[#2563EB] px-4 text-sm hover:bg-blue-700">
-                <DownloadIcon className="size-4" />
-                安装更新
-              </Button>
-            ) : null}
-            <Button type="button" variant="outline" onClick={handleCheckUpdate} disabled={checking || updating} className="h-[38px] rounded-[10px] text-sm">
-              <RefreshCwIcon className={cn("size-4", checking && "animate-spin")} />
-              检查更新
-            </Button>
-          </div>
-        </div>
-      </SectionCard>
+	      <SectionCard icon={ServerIcon} title="系统信息">
+	        <div className="divide-y divide-[#E5E7EB] dark:divide-slate-800">
+	          {systemRows.map((row) => (
+	            <SystemRow key={row.title} icon={row.icon} title={row.title} value={row.value} />
+	          ))}
+	          <SystemRow icon={Clock3Icon} title="最后同步" value={status?.timestamp || "--"} />
+	        </div>
+	      </SectionCard>
 
-      <SectionCard icon={GithubIcon} title="项目与作者">
-        <div className="divide-y divide-[#E5E7EB] dark:divide-slate-800">
-          <ProjectLink href={GITHUB_URL} icon={GithubIcon} title="GitHub" description="LinkHive 开源仓库" />
-          <ProjectLink href={RELEASES_URL} icon={Globe2Icon} title="项目主页" description="版本发布与安装包" />
-          <ProjectLink href={AUTHOR_URL} icon={ExternalLinkIcon} title="作者主页" description="@jiqimaooo" />
-        </div>
-      </SectionCard>
-
-      <SectionCard icon={ServerIcon} title="系统信息">
-        <div className="divide-y divide-[#E5E7EB] dark:divide-slate-800">
-          {systemRows.map((row) => (
-            <SystemRow key={row.title} icon={row.icon} title={row.title} value={row.value} />
-          ))}
-          <SystemRow icon={Clock3Icon} title="最后同步" value={status?.timestamp || "--"} />
-        </div>
-      </SectionCard>
+	      <SectionCard icon={GithubIcon} title="项目与作者">
+	        <div className="divide-y divide-[#E5E7EB] dark:divide-slate-800">
+	          <ProjectLink href={GITHUB_URL} icon={GithubIcon} title="GitHub" description="LinkHive 开源仓库" />
+	          <ProjectLink href={RELEASES_URL} icon={Globe2Icon} title="项目主页" description="版本发布与安装包" />
+	          <ProjectLink href={AUTHOR_URL} icon={ExternalLinkIcon} title="作者主页" description="@jiqimaooo" />
+	        </div>
+	      </SectionCard>
 
       <SectionCard icon={ShieldCheckIcon} title="开源许可证">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
@@ -326,15 +301,6 @@ function VersionLine({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-[13px] text-[#6B7280] dark:text-slate-400">{label}</div>
       <div className="mt-1 break-all text-sm font-semibold text-slate-950 dark:text-slate-100">{value}</div>
-    </div>
-  )
-}
-
-function InfoRow({ title, value }: { title: string; value: ReactNode }) {
-  return (
-    <div className="flex min-h-14 items-center justify-between gap-4 py-2.5">
-      <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</div>
-      <div className="min-w-0 text-right text-sm text-slate-700 dark:text-slate-300">{value}</div>
     </div>
   )
 }

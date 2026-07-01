@@ -12,6 +12,9 @@ export type Profile = {
 
 export type SmsItem = {
   id: string
+  db_id?: string
+  fingerprint?: string
+  direction?: "inbound" | "outbound" | string
   raw_id?: string
   device_id?: string
   storage?: "ME" | "SM" | string
@@ -167,6 +170,14 @@ export type StatusData = {
     next_allowed_at: string
   }
   sms: SmsItem[]
+  system?: {
+    started_at?: string
+    started_at_label?: string
+    uptime_seconds?: number
+    uptime?: string
+    cpu_architecture?: string
+    platform?: string
+  }
   timestamp: string
 }
 
