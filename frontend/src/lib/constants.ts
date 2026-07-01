@@ -3,7 +3,7 @@ import type { ChannelKind, NotificationChannelDefinition, NotificationFormTarget
 export const ACTIVE_ACTION_KEY = "ess-active-action"
 export const ICON_VERSION = "20260312-2"
 export const DEFAULT_BARK_ICON_URL =
-  `https://raw.githubusercontent.com/cyDione/LinkHive/main/frontend/public/app-icon.png?v=${ICON_VERSION}`
+  `https://raw.githubusercontent.com/jiqimaooo/LinkHive/main/frontend/public/app-icon.png?v=${ICON_VERSION}`
 
 export const NOTIFICATION_CHANNEL_DEFINITIONS: Record<ChannelKind, NotificationChannelDefinition> = {
   bark: {
