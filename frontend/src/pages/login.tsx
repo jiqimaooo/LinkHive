@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [totpCode, setTotpCode] = useState("")
   const [rememberAccount, setRememberAccount] = useState(false)
   const [countdown, setCountdown] = useState(banRemaining)
+  const countdownActive = countdown > 0
 
   // 只记住账号。旧版本如果保存过密码，这里会在读取账号后覆盖清理。
   useEffect(() => {
@@ -32,14 +33,14 @@ export default function LoginPage() {
         }
       }
     } catch { /* ignore */ }
-  }, [])
+  }, [setLoginForm])
 
   useEffect(() => {
     setCountdown(banRemaining)
   }, [banRemaining])
 
   useEffect(() => {
-    if (countdown <= 0) return
+    if (!countdownActive) return
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) { clearInterval(timer); return 0 }
@@ -47,7 +48,7 @@ export default function LoginPage() {
       })
     }, 1000)
     return () => clearInterval(timer)
-  }, [countdown > 0 ? 1 : 0])
+  }, [countdownActive])
 
   const hours = Math.floor(countdown / 3600)
   const minutes = Math.floor((countdown % 3600) / 60)

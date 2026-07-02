@@ -137,14 +137,15 @@ export default function SecurityPage() {
 
   const passwordStrength = useMemo(() => getPasswordStrength(newPassword), [newPassword])
   const loginDialogCopy = loginDialog ? LOGIN_DIALOG_COPY[loginDialog] : null
+  const totpSetupUrl = totpSetup?.otpauth_url ?? ""
   const totpQrDataUrl = useMemo(() => {
-    if (!totpSetup?.otpauth_url) return ""
+    if (!totpSetupUrl) return ""
     try {
-      return createQrSvgDataUrl(totpSetup.otpauth_url)
+      return createQrSvgDataUrl(totpSetupUrl)
     } catch {
       return ""
     }
-  }, [totpSetup?.otpauth_url])
+  }, [totpSetupUrl])
 
   const loadTotpStatus = useCallback(async () => {
     try {

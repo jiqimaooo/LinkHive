@@ -171,7 +171,7 @@ function drawFormatBits(matrix: Matrix, mask: number) {
 }
 
 function formatBits(mask: number): number {
-  let data = (1 << 3) | mask
+  const data = (1 << 3) | mask
   let value = data << 10
   const generator = 0b10100110111
   for (let i = 14; i >= 10; i -= 1) {
