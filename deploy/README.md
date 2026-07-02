@@ -14,14 +14,24 @@
 
 ## 普通 SIM 与 eSIM
 
-LinkHive 使用同一套部署文件支持普通 SIM 与 eSIM。安装脚本会始终部署 eSIM 相关包装脚本，并尽量安装可用的 `lpac`。当前运行模式由 `/etc/linkhive.conf` 控制：
+LinkHive 使用同一套部署文件支持普通 SIM 与 eSIM。安装脚本不再区分普通 SIM / eSIM 启动方式，会始终部署 eSIM 相关包装脚本，并尽量安装可用的 `lpac`。
 
-```env
-SIM_TYPE=esim
-ESIM_MANAGEMENT_ENABLED=1
+```bash
+sh ./deploy/install.sh
 ```
 
-控制台左侧的 `普通 SIM` 和 `eSIM` 菜单会调用后端接口写入这个配置，两个模式不能同时启用。
+普通 SIM 与 eSIM 不是全局二选一模式。后端会按设备自动识别：能读到 EID、eUICC 标记、eSIM Profile，或命中已知 eUICC 硬件特征的设备会展示为 eSIM；其他可用蜂窝设备按普通 SIM 展示。同一套系统可以同时展示普通 SIM 设备和 eSIM 设备。
+
+## 初始登录密码
+
+首次安装且 `/etc/linkhive.conf` 中还没有 `LINKHIVE_PASSWORD_HASH` 时，脚本会随机生成初始管理员密码，并只在安装终端输出一次：
+
+```text
+[install] LinkHive 初始账号: admin
+[install] LinkHive 初始密码: <随机生成>
+```
+
+配置文件只保存密码哈希，不能从 `/etc/linkhive.conf` 反查明文密码。已有鉴权配置会被保留，重复安装不会重新生成密码。
 
 ## lpac 资产选择
 

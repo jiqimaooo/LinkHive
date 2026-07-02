@@ -46,7 +46,7 @@ const AUTHOR_URL = "https://github.com/jiqimaooo"
 const LICENSE_URL = "https://github.com/jiqimaooo/LinkHive/blob/main/LICENSE"
 
 export default function AboutPage() {
-  const { status, currentSimType } = useAppContext()
+  const { status } = useAppContext()
   const [currentVersion, setCurrentVersion] = useState("V1.0-20250621")
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
@@ -79,9 +79,9 @@ export default function AboutPage() {
       { icon: TimerIcon, title: "运行时长", value: status?.system?.uptime || "--" },
       { icon: BadgeCheckIcon, title: "版本号", value: currentVersion },
       { icon: CpuIcon, title: "CPU 架构", value: status?.system?.cpu_architecture || "--" },
-      { icon: HardDriveIcon, title: "SIM 模式", value: currentSimType === "physical" ? "实体 SIM" : "eSIM" },
+      { icon: HardDriveIcon, title: "SIM/eSIM", value: "按设备自动识别" },
     ],
-    [currentSimType, currentVersion, status?.system?.cpu_architecture, status?.system?.started_at_label, status?.system?.uptime],
+    [currentVersion, status?.system?.cpu_architecture, status?.system?.started_at_label, status?.system?.uptime],
   )
 
   const handleCheckUpdate = async () => {

@@ -30,10 +30,6 @@ export type AppContextType = {
   setLogs: Dispatch<SetStateAction<ActionEvent[]>>
   runAction: (action: ActionName, payload: Record<string, unknown>, label: string) => Promise<void>
 
-  // SIM Mode
-  switchingMode: "physical" | "esim" | null
-  switchSimMode: (simType: "physical" | "esim") => Promise<void>
-
   // Notifications
   notificationTargets: NotificationFormTarget[]
   setNotificationTargets: (updater: (current: NotificationFormTarget[]) => NotificationFormTarget[]) => void
@@ -70,7 +66,6 @@ export type AppContextType = {
 
   // Derived
   esimEnabled: boolean
-  currentSimType: "physical" | "esim"
 
   // Dirty refs
   notificationsDirtyRef: MutableRefObject<boolean>

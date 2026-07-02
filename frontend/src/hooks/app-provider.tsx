@@ -41,7 +41,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [apnForm, setApnForm] = useState<ApnFormState>({ apn: "", username: "", password: "", ip_type: "ipv4v6" })
   const [networkCode, setNetworkCode] = useState("")
   const [radioMode, setRadioMode] = useState("network_disabled")
-  const [switchingMode, setSwitchingMode] = useState<"physical" | "esim" | null>(null)
 
   const notificationsDirtyRef = useRef(false)
   const keepaliveDirtyRef = useRef(false)
@@ -153,24 +152,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }))
     setStatus(null)
   }, [])
-
-  const switchSimMode = useCallback(async (simType: "physical" | "esim") => {
-    if (switchingMode || status?.capabilities.sim_type === simType) return
-    setSwitchingMode(simType)
-    try {
-      const response = await requestJson<{ ok: true; status: StatusData }>("/api/settings/sim-mode", {
-        method: "POST",
-        body: JSON.stringify({ sim_type: simType }),
-      })
-      setStatus(response.status)
-      syncFormsFromStatus(response.status)
-      toast.success(simType === "esim" ? "已启用 eSIM 模式" : "已启用普通 SIM 模式")
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "切换 SIM 模式失败")
-    } finally {
-      setSwitchingMode(null)
-    }
-  }, [status?.capabilities.sim_type, switchingMode, syncFormsFromStatus])
 
   const finishAction = useCallback((snapshot: ActionSnapshot, currentAction: PersistedAction) => {
     if (snapshot.status) {
@@ -502,20 +483,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!(status?.profiles ?? []).some((profile) => profile.iccid === expandedProfileIccid)) setExpandedProfileIccid(null)
   }, [expandedProfileIccid, status?.profiles])
 
-  const currentSimType: "physical" | "esim" = status?.capabilities.sim_type === "physical" ? "physical" : "esim"
   const actionBusy = Boolean(activeAction || submittingActionLabel)
 
   const ctx: AppContextType = {
     authStatus, loginForm, setLoginForm, isLoggingIn, totpRequired, banRemaining, login, logout,
     status, isLoadingStatus, isRefreshing, autoRefresh, setAutoRefresh, refreshStatus,
     logs, activeAction, submittingActionLabel, actionBusy, appendLog, setLogs, runAction,
-    switchingMode, switchSimMode,
     notificationTargets, setNotificationTargets, newNotificationType, setNewNotificationType, saveNotifications,
     keepaliveSettings, setKeepaliveSettings, keepaliveTasks, setKeepaliveTasks, expandedKeepaliveTaskId, setExpandedKeepaliveTaskId, saveKeepalive, sendKeepaliveTestSms,
     profileSmscForms, setProfileSmscForms, expandedProfileIccid, setExpandedProfileIccid, saveProfileSmsc,
     apnForm, setApnForm,
     networkCode, setNetworkCode, radioMode, setRadioMode,
-    esimEnabled, currentSimType,
+    esimEnabled,
     notificationsDirtyRef, keepaliveDirtyRef, profileSmscDirtyRef, apnDirtyRef, networkDirtyRef, radioModeDirtyRef,
   }
 

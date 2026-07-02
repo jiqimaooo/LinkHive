@@ -45,7 +45,6 @@ if [ -z "${LPAC_FALLBACK_RELEASE_BASE_URL}" ] && [ -n "${REPO_OWNER}" ] && [ -n 
     LPAC_FALLBACK_RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/lpac-assets"
 fi
 
-SIM_TYPE="esim"
 ARCH="unknown"
 OS_ID="unknown"
 OS_VERSION="unknown"
@@ -74,11 +73,7 @@ cleanup() {
 usage() {
     cat <<'EOF'
 Usage:
-  sh ./deploy/install.sh [--sim-type esim|physical]
-
-Options:
-  --sim-type esim      默认模式，启用 eSIM 管理与短信转发
-  --sim-type physical  普通 SIM 模式，只启用短信相关功能
+  sh ./deploy/install.sh
 
 Environment:
   REPO_OWNER / REPO_NAME
@@ -132,15 +127,6 @@ download_file() {
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --sim-type)
-                [ $# -ge 2 ] || die "--sim-type 缺少参数"
-                SIM_TYPE=$2
-                shift 2
-                ;;
-            --sim-type=*)
-                SIM_TYPE=${1#*=}
-                shift
-                ;;
             -h|--help)
                 usage
                 exit 0
@@ -150,14 +136,6 @@ parse_args() {
                 ;;
         esac
     done
-
-    case "${SIM_TYPE}" in
-        esim|physical)
-            ;;
-        *)
-            die "--sim-type 只支持 esim 或 physical"
-            ;;
-    esac
 }
 
 copy_frontend_dist() {
@@ -234,7 +212,7 @@ check_environment() {
             ;;
     esac
 
-    log "安装模式: ${SIM_TYPE}"
+    log "安装方式: 统一安装，普通 SIM / eSIM 按设备自动识别"
 }
 
 ensure_config() {
@@ -299,10 +277,6 @@ show_dependency_warnings() {
         warn "Apprise 尚未安装到运行环境中"
     fi
 
-    if [ "${SIM_TYPE}" = "physical" ]; then
-        return
-    fi
-
     if ! lpac_binary_usable; then
         warn "未检测到可用的 lpac，可稍后重新执行安装或补充对应系统版本的 lpac 资产"
     fi
@@ -336,18 +310,6 @@ config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
 
-write_app_config() {
-    esim_enabled=1
-    if [ "${SIM_TYPE}" = "physical" ]; then
-        esim_enabled=0
-    fi
-
-    merge_env_config_value "${APP_CONFIG_DST}" "SIM_TYPE" "${SIM_TYPE}"
-    merge_env_config_value "${APP_CONFIG_DST}" "ESIM_MANAGEMENT_ENABLED" "${esim_enabled}"
-    chmod 644 "${APP_CONFIG_DST}"
-    log "已更新安装模式配置并保留现有业务设置: ${APP_CONFIG_DST}"
-}
-
 ensure_auth_config() {
     python3 - "${APP_CONFIG_DST}" <<'PY'
 import hashlib
@@ -375,7 +337,7 @@ config.setdefault("LINKHIVE_BRUTE_FORCE_ENABLED", "1")
 config.setdefault("LINKHIVE_BRUTE_FORCE_MAX_ATTEMPTS", "5")
 config.setdefault("LINKHIVE_BRUTE_FORCE_LAN_ENABLED", "1")
 if not config.get("LINKHIVE_PASSWORD_HASH"):
-    generated_password = "admin"
+    generated_password = secrets.token_urlsafe(18)
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac(
         "sha256",
@@ -439,14 +401,11 @@ print_install_summary() {
     printf '%s\n' "管理页面: ${access_url}"
     printf '%s\n' "linkhive-admin.service: ${admin_state}"
     printf '%s\n' "sms-forwarder.service: ${sms_state}"
-    printf '%s\n' "安装模式: ${SIM_TYPE}"
+    printf '%s\n' "SIM/eSIM: 统一安装，按设备自动识别"
     printf '%s\n' "lpac: ${lpac_state}"
     printf '%s\n' "通知渠道: ${notification_state}"
     printf '%s\n' "配置文件: ${SMS_CONFIG_DST}"
     printf '%s\n' "切卡命令: /usr/local/bin/lpac-switch list"
-    if [ "${SIM_TYPE}" = "physical" ]; then
-        printf '%s\n' "当前模式: 普通 SIM，控制台切换到 eSIM 后才会执行 eSIM 管理"
-    fi
     printf '%s\n' "查看状态: curl -s http://127.0.0.1:8080/api/status"
     printf '%s\n' "================================"
 }
@@ -777,7 +736,6 @@ main() {
     install_file "${WEB_ADMIN_SERVICE_SRC}" "${WEB_ADMIN_SERVICE_DST}" 644
     install_file "${SMS_SERVICE_SRC}" "${SMS_SERVICE_DST}" 644
 
-    write_app_config
     ensure_auth_config
     ensure_config
     show_dependency_warnings

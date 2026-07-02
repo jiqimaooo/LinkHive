@@ -788,40 +788,7 @@ def write_env_config(path: Path, config: dict[str, str]) -> None:
 
 
 def app_runtime_config() -> dict[str, str]:
-    config = read_env_config(APP_CONFIG_PATH)
-    if "SIM_TYPE" not in config and os.environ.get("SIM_TYPE"):
-        config["SIM_TYPE"] = os.environ["SIM_TYPE"]
-    if "ESIM_MANAGEMENT_ENABLED" not in config and os.environ.get("ESIM_MANAGEMENT_ENABLED"):
-        config["ESIM_MANAGEMENT_ENABLED"] = os.environ["ESIM_MANAGEMENT_ENABLED"]
-    return config
-
-
-def esim_management_enabled() -> bool:
-    config = app_runtime_config()
-    raw = str(config.get("ESIM_MANAGEMENT_ENABLED", "")).strip().lower()
-    if raw:
-        return raw in {"1", "true", "yes", "enabled"}
-    return str(config.get("SIM_TYPE", "physical")).strip().lower() != "physical"
-
-
-def sim_type() -> str:
-    return str(app_runtime_config().get("SIM_TYPE", "physical")).strip().lower() or "physical"
-
-
-def normalize_sim_type(raw_value: Any) -> str:
-    value = str(raw_value or "").strip().lower()
-    if value not in {"physical", "esim"}:
-        raise ValueError("SIM 模式只支持 physical 或 esim")
-    return value
-
-
-def set_sim_type(next_sim_type: str) -> dict[str, str]:
-    normalized = normalize_sim_type(next_sim_type)
-    config = app_runtime_config()
-    config["SIM_TYPE"] = normalized
-    config["ESIM_MANAGEMENT_ENABLED"] = "1" if normalized == "esim" else "0"
-    write_env_config(APP_CONFIG_PATH, config)
-    return config
+    return read_env_config(APP_CONFIG_PATH)
 
 
 def auth_config() -> dict[str, str]:
@@ -1162,7 +1129,7 @@ def is_ip_banned(ip: str) -> bool:
 
 
 def default_security_audit() -> dict[str, Any]:
-    return {"sessions": [], "logins": [], "failures": []}
+    return {"sessions": [], "logins": [], "failures": [], "revoked_sessions": []}
 
 
 def read_security_audit() -> dict[str, Any]:
@@ -1238,6 +1205,17 @@ def prune_security_audit(data: dict[str, Any]) -> dict[str, Any]:
     data["sessions"] = sessions[-50:]
     data["logins"] = [item for item in data.get("logins", []) if isinstance(item, dict)][-50:]
     data["failures"] = [item for item in data.get("failures", []) if isinstance(item, dict)][-80:]
+    revoked_sessions = []
+    for item in data.get("revoked_sessions", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            expires_at = int(item.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        if expires_at > now and item.get("session_id"):
+            revoked_sessions.append(item)
+    data["revoked_sessions"] = revoked_sessions[-200:]
     return data
 
 
@@ -1282,6 +1260,33 @@ def clear_security_sessions() -> None:
         write_security_audit(data)
 
 
+def revoke_session_from_cookie(raw_cookie: str) -> bool:
+    session_value = parse_cookie_header(raw_cookie).get(AUTH_COOKIE_NAME, "")
+    parts = session_value.split(":")
+    if len(parts) != 5:
+        return False
+    _, raw_expires_at, _, session_id, _ = parts
+    if not session_id:
+        return False
+    try:
+        expires_at = int(raw_expires_at)
+    except ValueError:
+        expires_at = int(time.time()) + AUTH_SESSION_TTL_SECONDS
+    with SECURITY_AUDIT_LOCK:
+        data = prune_security_audit(read_security_audit())
+        data["sessions"] = [item for item in data.get("sessions", []) if item.get("session_id") != session_id]
+        data["revoked_sessions"] = [
+            item for item in data.get("revoked_sessions", []) if item.get("session_id") != session_id
+        ]
+        data["revoked_sessions"].append({
+            "session_id": session_id,
+            "revoked_at": iso_now(),
+            "expires_at": max(expires_at, int(time.time()) + 60),
+        })
+        write_security_audit(prune_security_audit(data))
+    return True
+
+
 def make_session_cookie(username: str, ip: str = "", user_agent: str = "", location: str = "") -> str:
     expires_at = int(time.time()) + AUTH_SESSION_TTL_SECONDS
     session_version = auth_session_version()
@@ -1323,7 +1328,14 @@ def valid_session_cookie(raw_cookie: str) -> bool:
     if session_version != auth_session_version():
         return False
     expected = sign_legacy_session(username, expires_at) if len(parts) == 3 else sign_session(username, expires_at, session_version, session_id)
-    return hmac.compare_digest(signature, expected)
+    if not hmac.compare_digest(signature, expected):
+        return False
+    if session_id:
+        with SECURITY_AUDIT_LOCK:
+            data = prune_security_audit(read_security_audit())
+            if any(item.get("session_id") == session_id for item in data.get("revoked_sessions", [])):
+                return False
+    return True
 
 
 def session_id_from_cookie(raw_cookie: str) -> str:
@@ -3110,7 +3122,7 @@ def get_status(refresh_profiles: bool = False, refresh_devices: bool = False, re
     configured_targets = configured_notification_targets(notification_targets)
     lpac_installed = os.path.exists("/opt/lpac/lpac")
     esim_enabled = False
-    current_sim_type = sim_type()
+    current_sim_type = "unknown"
     connection = get_connection_info()
     connection_defaults = infer_apn_defaults_from_connection(
         "" if connection.get("gsm.apn", "") == "--" else connection.get("gsm.apn", ""),
@@ -3622,17 +3634,6 @@ def save_keepalive_settings(ctx: ActionContext, payload: dict[str, Any]) -> None
     )
 
 
-def update_sim_mode(ctx: ActionContext, payload: dict[str, Any]) -> None:
-    next_sim_type = normalize_sim_type(payload.get("sim_type") or payload.get("mode"))
-    set_sim_type(next_sim_type)
-    if next_sim_type == "esim":
-        ctx.log("已切换到 eSIM 模式，普通 SIM 模式自动关闭")
-        if not os.path.exists("/opt/lpac/lpac"):
-            ctx.log("未检测到 /opt/lpac/bin/lpac，eSIM Profile 读取与切卡可能不可用", "warning")
-    else:
-        ctx.log("已切换到普通 SIM 模式，eSIM 管理自动关闭")
-
-
 def restart_sms_service(ctx: ActionContext) -> None:
     run_logged_command(
         ctx,
@@ -3941,7 +3942,7 @@ def run_keepalive_task(ctx: ActionContext, payload: dict[str, Any]) -> None:
             else:
                 ctx.log("目标 Profile 未配置短信中心，继续按基带现有配置发送")
         else:
-            ctx.log("普通 SIM 模式，跳过 Profile 切换，直接使用当前基带发送短信")
+            ctx.log("任务未指定 eSIM Profile，直接使用当前 SIM 发送短信")
 
         send_success = False
         for attempt in range(1, KEEPALIVE_MAX_SEND_ATTEMPTS + 1):
@@ -4028,9 +4029,6 @@ def execute_action(action: str, payload: dict[str, Any], ctx: ActionContext) -> 
         return
     if action == "save_keepalive":
         save_keepalive_settings(ctx, payload)
-        return
-    if action == "update_sim_mode":
-        update_sim_mode(ctx, payload)
         return
     if action == "recover_modem":
         recover_modem(ctx, payload)
@@ -4487,7 +4485,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/totp-status":
             if not self._require_auth():
                 return
-            self._write_json(200, {"enabled": totp_enabled(), "secret": totp_secret()})
+            self._write_json(200, {"enabled": totp_enabled()})
             return
 
         if path == "/api/auth/ban-status":
@@ -4598,6 +4596,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/api/auth/logout":
+                revoke_session_from_cookie(self.headers.get("Cookie", ""))
                 self._write_json(
                     200,
                     {"ok": True, "authenticated": False},
@@ -4625,17 +4624,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 new_username = str(data.get("new_username", "")).strip()
                 new_password = str(data.get("new_password", "")).strip()
                 config = read_env_config(APP_CONFIG_PATH)
+                if (new_username or new_password) and not verify_password(old_password):
+                    self._write_json(401, {"error": "当前密码不正确"})
+                    return
                 if new_username:
                     if not new_username or len(new_username) < 2:
                         self._write_json(400, {"error": "用户名不能少于 2 位"})
                         return
                     config["LINKHIVE_ADMIN_USER"] = new_username
                 if new_password:
-                    if not verify_password(old_password):
-                        self._write_json(401, {"error": "旧密码不正确"})
-                        return
-                    if len(new_password) < 4:
-                        self._write_json(400, {"error": "新密码不能少于 4 位"})
+                    if len(new_password) < 8:
+                        self._write_json(400, {"error": "新密码不能少于 8 位"})
                         return
                     salt = secrets.token_hex(16)
                     new_hash = f"pbkdf2_sha256${salt}${hash_password(new_password, salt)}"
@@ -4749,10 +4748,6 @@ class AppHandler(BaseHTTPRequestHandler):
             if path == "/api/keepalive":
                 message = execute_sync_action("save_keepalive", data)
                 self._write_json(200, {"ok": True, "message": message, "status": get_status()})
-                return
-            if path == "/api/settings/sim-mode":
-                message = execute_sync_action("update_sim_mode", data)
-                self._write_json(200, {"ok": True, "message": message, "status": get_status(refresh_profiles=True)})
                 return
             if path == "/api/modem/recover":
                 self._handle_sync_action("recover_modem", data)

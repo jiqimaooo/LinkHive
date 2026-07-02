@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   BanIcon,
   ChevronRightIcon,
+  CopyIcon,
   EyeIcon,
   LaptopIcon,
   ListIcon,
@@ -32,6 +33,7 @@ import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { requestJson } from "@/lib/api"
+import { createQrSvgDataUrl } from "@/lib/qr"
 import { cn } from "@/lib/utils"
 
 type BanStatus = {
@@ -135,6 +137,14 @@ export default function SecurityPage() {
 
   const passwordStrength = useMemo(() => getPasswordStrength(newPassword), [newPassword])
   const loginDialogCopy = loginDialog ? LOGIN_DIALOG_COPY[loginDialog] : null
+  const totpQrDataUrl = useMemo(() => {
+    if (!totpSetup?.otpauth_url) return ""
+    try {
+      return createQrSvgDataUrl(totpSetup.otpauth_url)
+    } catch {
+      return ""
+    }
+  }, [totpSetup?.otpauth_url])
 
   const loadTotpStatus = useCallback(async () => {
     try {
@@ -523,11 +533,28 @@ export default function SecurityPage() {
           ) : totpSetup ? (
             <div className="space-y-4">
               <div className="flex flex-col gap-4 rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 sm:flex-row dark:border-slate-800 dark:bg-slate-900">
-                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=168x168&data=${encodeURIComponent(totpSetup.otpauth_url)}`} alt="TOTP QR" className="size-40 rounded-xl border border-[#E5E7EB] bg-white p-2 dark:border-slate-800" />
+                {totpQrDataUrl ? (
+                  <img src={totpQrDataUrl} alt="TOTP QR" className="size-40 shrink-0 rounded-xl border border-[#E5E7EB] bg-white p-2 dark:border-slate-800" />
+                ) : null}
                 <div className="min-w-0 text-sm text-[#6B7280] dark:text-slate-400">
-                  <p className="font-medium text-slate-900 dark:text-slate-100">扫描二维码绑定</p>
-                  <p className="mt-2 leading-6">无法扫码时，可手动输入以下密钥。</p>
+                  <p className="font-medium text-slate-900 dark:text-slate-100">{totpQrDataUrl ? "扫描二维码绑定" : "手动绑定认证器"}</p>
+                  <p className="mt-2 leading-6">
+                    {totpQrDataUrl ? "二维码由本地浏览器生成，不会调用第三方二维码服务。" : "绑定 URI 过长，无法生成二维码。请在认证器中手动输入密钥。"}
+                  </p>
                   <code className="mt-3 block truncate rounded-lg bg-white px-3 py-2 text-xs text-slate-700 dark:bg-slate-950 dark:text-slate-200">{totpSetup.secret}</code>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3 h-9 rounded-[10px]"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(totpSetup.otpauth_url)
+                      toast.success("绑定 URI 已复制")
+                    }}
+                  >
+                    <CopyIcon className="size-4" />
+                    复制绑定 URI
+                  </Button>
                 </div>
               </div>
               <Input value={totpCode} onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入 6 位验证码" className="h-11 rounded-[10px] text-center text-base tracking-[0.35em]" maxLength={6} />

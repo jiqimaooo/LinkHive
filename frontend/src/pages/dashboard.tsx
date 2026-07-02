@@ -79,7 +79,7 @@ export default function DashboardPage() {
     { label: esimEnabled ? "当前 Profile" : "当前 SIM", value: simLabel },
     { label: "ICCID", value: displayValue(device?.iccid), mono: true },
     { label: "SIM 类型", value: formatSimType(status?.capabilities.sim_type, esimEnabled) },
-    { label: "eSIM 管理", value: formatEnabledState(status?.capabilities.esim_management_enabled) },
+    { label: "eSIM 能力", value: formatEnabledState(status?.capabilities.esim_management_enabled) },
   ]
   const networkOverviewRows: OverviewRow[] = [
     { label: "注册状态", value: formatRegistrationState(status?.modem.registration || "--") },
@@ -376,11 +376,12 @@ function formatSimType(simType: string | null | undefined, esimEnabled: boolean)
   const normalized = String(simType ?? "").trim().toLowerCase()
   if (normalized === "physical") return "普通 SIM"
   if (normalized === "esim") return "eSIM"
-  return esimEnabled ? "eSIM" : "普通 SIM"
+  if (esimEnabled) return "eSIM"
+  return "未识别"
 }
 
 function formatEnabledState(enabled: boolean | null | undefined) {
-  return enabled ? "已启用" : "未启用"
+  return enabled ? "支持" : "不支持"
 }
 
 function compactDeviceName(manufacturer?: string, model?: string) {

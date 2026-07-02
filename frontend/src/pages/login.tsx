@@ -14,17 +14,22 @@ const REMEMBER_KEY = "linkhive_remember"
 export default function LoginPage() {
   const { loginForm, setLoginForm, isLoggingIn, totpRequired, banRemaining, login } = useAppContext()
   const [totpCode, setTotpCode] = useState("")
-  const [rememberMe, setRememberMe] = useState(false)
+  const [rememberAccount, setRememberAccount] = useState(false)
   const [countdown, setCountdown] = useState(banRemaining)
 
-  // 初始化：读取已保存的凭证
+  // 只记住账号。旧版本如果保存过密码，这里会在读取账号后覆盖清理。
   useEffect(() => {
     try {
       const saved = localStorage.getItem(REMEMBER_KEY)
       if (saved) {
-        const { username, password } = JSON.parse(saved)
-        setLoginForm((c) => ({ ...c, username: username || c.username, password: password || c.password }))
-        setRememberMe(true)
+        const { username } = JSON.parse(saved)
+        if (username) {
+          setLoginForm((c) => ({ ...c, username }))
+          setRememberAccount(true)
+          localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username }))
+        } else {
+          localStorage.removeItem(REMEMBER_KEY)
+        }
       }
     } catch { /* ignore */ }
   }, [])
@@ -49,10 +54,9 @@ export default function LoginPage() {
   const seconds = countdown % 60
 
   const handleSubmit = () => {
-    // 记住密码：在登录前保存（密码步骤），TOTP 步骤不重复保存
-    if (!totpRequired && rememberMe) {
-      localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username: loginForm.username, password: loginForm.password }))
-    } else if (!rememberMe) {
+    if (!totpRequired && rememberAccount) {
+      localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username: loginForm.username }))
+    } else if (!rememberAccount) {
       localStorage.removeItem(REMEMBER_KEY)
     }
 
@@ -120,11 +124,11 @@ export default function LoginPage() {
                     <input
                       id="remember-me"
                       type="checkbox"
-                      checked={rememberMe}
-                      onChange={(e) => setRememberMe(e.target.checked)}
+                      checked={rememberAccount}
+                      onChange={(e) => setRememberAccount(e.target.checked)}
                       className="size-4 rounded accent-blue-600"
                     />
-                    <Label htmlFor="remember-me" className="text-sm text-muted-foreground cursor-pointer">记住密码</Label>
+                    <Label htmlFor="remember-me" className="text-sm text-muted-foreground cursor-pointer">记住账号</Label>
                   </div>
                   <Button type="submit" disabled={isLoggingIn} className="h-11">
                     {isLoggingIn ? <LoaderCircleIcon data-icon="inline-start" className="animate-spin" /> : null}

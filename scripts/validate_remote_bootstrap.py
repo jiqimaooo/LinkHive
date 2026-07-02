@@ -26,16 +26,10 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SCRIPT_URL,
         help="Public bootstrap script URL to validate",
     )
-    parser.add_argument(
-        "--sim-type",
-        default="esim",
-        choices=("esim", "physical"),
-        help="Pass-through --sim-type argument",
-    )
     return parser.parse_args()
 
 
-def build_remote_script(script_url: str, sim_type: str) -> str:
+def build_remote_script(script_url: str) -> str:
     quoted_url = script_url.replace('"', '\\"')
     return f"""#!/bin/bash
 set -euo pipefail
@@ -62,7 +56,7 @@ else
     echo "[validate] /opt/lpac not present, skipping backup"
 fi
 
-curl -fsSL "{quoted_url}" | sh -s -- --sim-type {sim_type}
+curl -fsSL "{quoted_url}" | sh
 
 /usr/local/bin/lpac-switch list > "${{VERIFY_LOG}}"
 cat "${{VERIFY_LOG}}"
@@ -103,7 +97,7 @@ def run_remote_script(
 
 def main() -> int:
     args = parse_args()
-    script_content = build_remote_script(args.script_url, args.sim_type)
+    script_content = build_remote_script(args.script_url)
     status, output, error = run_remote_script(
         host=args.host,
         user=args.user,

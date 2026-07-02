@@ -6,7 +6,6 @@ REPO_NAME="${REPO_NAME:-LinkHive}"
 ASSET_NAME="${ASSET_NAME:-LinkHive-deploy.zip}"
 
 TMP_DIR=""
-INSTALL_ARGS=""
 
 log() {
     printf '%s\n' "[bootstrap] $*"
@@ -24,11 +23,7 @@ die() {
 usage() {
     cat <<'EOF'
 Usage:
-  curl -fsSL <url> | sudo REPO_OWNER=<owner> REPO_NAME=LinkHive sh -s -- [--sim-type esim|physical]
-
-Options:
-  --sim-type esim      默认模式，启用 eSIM 管理与短信转发
-  --sim-type physical  普通 SIM 模式，只启用短信相关功能
+  curl -fsSL <url> | sudo REPO_OWNER=<owner> REPO_NAME=LinkHive sh
 EOF
 }
 
@@ -114,15 +109,6 @@ ensure_extract_dependencies() {
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --sim-type)
-                [ $# -ge 2 ] || die "--sim-type 缺少参数"
-                INSTALL_ARGS="${INSTALL_ARGS} --sim-type $2"
-                shift 2
-                ;;
-            --sim-type=*)
-                INSTALL_ARGS="${INSTALL_ARGS} $1"
-                shift
-                ;;
             -h|--help)
                 usage
                 exit 0
@@ -166,8 +152,7 @@ main() {
 
     log "开始执行部署脚本"
     cd "${package_root}"
-    # shellcheck disable=SC2086
-    sh ./deploy/install.sh ${INSTALL_ARGS}
+    sh ./deploy/install.sh
     log "安装完成"
 }
 

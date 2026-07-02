@@ -81,11 +81,7 @@ docker compose down
 curl -fsSL https://raw.githubusercontent.com/jiqimaooo/LinkHive/main/scripts/install_latest.sh | sudo sh
 ```
 
-默认初始模式为 eSIM。如果要以普通 SIM 模式启动：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jiqimaooo/LinkHive/main/scripts/install_latest.sh | sudo sh -s -- --sim-type physical
-```
+安装脚本不再区分普通 SIM / eSIM 启动方式；它会统一部署短信、控制台、lpac 包装脚本和可用的 eSIM 依赖。系统会按每个设备探测到的 EID、eUICC 能力、Profile 列表和硬件特征自动识别普通 SIM 或 eSIM，不需要选择全局模式。
 
 安装完成后访问：
 
@@ -93,14 +89,14 @@ curl -fsSL https://raw.githubusercontent.com/jiqimaooo/LinkHive/main/scripts/ins
 http://设备IP:8080
 ```
 
-默认登录信息：
+首次安装时，脚本会在终端输出初始登录信息：
 
 ```text
-账号：admin
-密码：admin
+[install] LinkHive 初始账号: admin
+[install] LinkHive 初始密码: <随机生成>
 ```
 
-生产环境建议首次登录后立即修改密码，并尽量放在可信内网或 HTTPS 反向代理后面。
+随机初始密码只会在首次安装时显示一次，后续 `/etc/linkhive.conf` 只保存密码哈希，不能反查明文。如果忘记初始密码，请重新设置密码哈希或重新初始化鉴权配置。生产环境建议首次登录后立即修改密码，并尽量放在可信内网或 HTTPS 反向代理后面。
 
 安装后会注册两个 systemd 服务：
 
@@ -168,7 +164,7 @@ gh release create lpac-assets \
 - LinkHive 不提供、也不会接入任何官方在线云服务；短信内容、SIM/eSIM 信息、通知渠道密钥、登录凭据和运行日志均由部署者自行保存和管理。
 - 项目的开源代码不负责托管、备份、同步或保护您的业务数据。数据安全、网络访问控制、系统加固、密钥保管、备份恢复和合规使用均由部署和使用者自行负责。
 - 不要直接暴露到公网；如确需公网访问，请配置可信反向代理或 VPN 入口，并开启 TOTP 等二次验证措施。
-- 首次部署后修改默认密码。
+- 首次部署后修改安装脚本生成的随机初始密码。
 - 需要二次认证时，在安全中心启用 TOTP；如果丢失验证器，可在 `/etc/linkhive.conf` 中设置 `LINKHIVE_TOTP_ENABLED=false` 后重启服务。
 - 不要把 `/etc/linkhive.conf`、`/etc/sms-forwarder.conf` 或任何包含 token/password 的文件提交到 Git。
   
@@ -198,7 +194,7 @@ LinkHive 基于并参考了 [cyDione/eSIM-SMS-Forwarder](https://github.com/cyDi
 - Web 控制台已从原有单页管理界面重构为多页面 SaaS 风格后台。
 - 增加登录鉴权、安全中心、二次认证接口、防暴力破解、会话管理和操作日志能力。
 - 重构设备管理、短信管理、通知转发、定时任务、系统设置和移动端适配。
-- 普通 SIM 与 eSIM 从安装期分离改为运行期管理，并支持多设备、多 Profile 的展示和配置。
+- 普通 SIM 与 eSIM 从安装期分离改为设备级自动识别，并支持多设备、多 Profile 的展示和配置。
 - 增加直连 Quectel 模组的 QMI/AT 混合基带访问能力，逐步减少对 ModemManager 的依赖。
 - 增加 Docker、Release、远端部署和前端构建发布相关脚本。
 
